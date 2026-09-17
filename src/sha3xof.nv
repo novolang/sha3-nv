@@ -1,0 +1,251 @@
+// sha3xof — SHAKE128 and SHAKE256, the two extendable-output functions
+// of FIPS 202.
+//
+// WHAT AN XOF IS.  FIPS 202 § 6.2 defines SHAKE128 and SHAKE256 as
+// functions whose output is "of any desired length".  The same sponge
+// absorbs the message, and then bytes are read out of it for as long
+// as the caller wants them.  There is no digest length mixed into the
+// state and no counter: the first 32 bytes of a 64-byte SHAKE256
+// output ARE the 32-byte SHAKE256 output of the same message.  That is
+// the opposite of the rule for SHA-3's fixed widths, and of BLAKE2's,
+// where the digest length is part of the hash.
+//
+// THE NUMBER IN THE NAME IS A SECURITY LEVEL, NOT A LENGTH.  SHAKE128
+// offers 128 bits of security against every attack the sponge claim
+// covers, at any output length; SHAKE256 offers 256.  A caller who
+// reads 64 bytes out of SHAKE128 has 64 bytes and still 128 bits of
+// security.  This trips people who read `SHAKE128` as a 128-bit
+// digest, so the constant that says what the number means is
+// `SHAKE128_SECURITY_BITS` and there is no `SHAKE128_DIGEST_BYTES`.
+//
+// SQUEEZING IS RESUMABLE.  `xof_squeeze` answers the state positioned
+// after the bytes it wrote, so a caller that needs a key stream takes
+// it in pieces and the pieces concatenate to one output.  That is what
+// makes an XOF usable as a stream: the same call shape as `update`,
+// running the other way.
+
+use std.bytes
+
+// Message bytes SHAKE128 absorbs per permutation, and output bytes it
+// produces per permutation.
+pub const SHAKE128_RATE_BYTES = 168
+
+// The same for SHAKE256.  It is 136, the same rate as SHA3-256, and
+// the two differ only in the domain-separation byte.
+pub const SHAKE256_RATE_BYTES = 136
+
+// The security strength SHAKE128 claims, in bits, at every output
+// length.
+pub const SHAKE128_SECURITY_BITS = 128
+
+// The security strength SHAKE256 claims, in bits, at every output
+// length.
+pub const SHAKE256_SECURITY_BITS = 256
+
+// Which of the two extendable-output functions.
+//
+// ```novo
+// use sha3xof
+//
+// fn main() [io]
+//     println(sha3xof.xof_name(Sha3Shake128))   // SHAKE128
+// ```
+pub enum Sha3XofKind
+    // SHAKE128: rate 168, 128 bits of security.  The faster of the
+    // two, and what a protocol specifies when it wants a key stream
+    // out of Keccak.
+    Sha3Shake128
+    // SHAKE256: rate 136, 256 bits of security.
+    Sha3Shake256
+
+// A SHAKE in progress, absorbing or squeezing.
+//
+// A `@value` struct over the `@value` sponge: no allocation, and a
+// copy of it is a fork of the output stream, which is what a test
+// that squeezes the same bytes twice needs.
+//
+// ```novo
+// use sha3xof
+//
+// fn main() [io]
+//     let x = sha3xof.xof_new(Sha3Shake128)
+//     println("${sha3xof.xof_is_sealed(x)}")   // false
+// ```
+pub @value
+struct Sha3Xof
+    // The sponge, started with the kind's rate and `0x1f` — or with
+    // `0x04` when `sha3kmac` built it as a cSHAKE.
+    sponge: Sha3Sponge
+
+// Message bytes the kind absorbs per permutation: 168 or 136.
+//
+// ```novo
+// use sha3xof
+//
+// fn main() [io]
+//     println("${sha3xof.xof_rate_bytes(Sha3Shake128)}")   // 168
+// ```
+pub fn xof_rate_bytes(k: Sha3XofKind) -> Int []
+    todo("sha3-nv.sha3xof.xof_rate_bytes")
+
+// The security strength the kind claims, in bits: 128 or 256.
+//
+// ```novo
+// use sha3xof
+//
+// fn main() [io]
+//     println("${sha3xof.xof_security_bits(Sha3Shake256)}")   // 256
+// ```
+pub fn xof_security_bits(k: Sha3XofKind) -> Int []
+    todo("sha3-nv.sha3xof.xof_security_bits")
+
+// The kind's name as FIPS 202 writes it: `"SHAKE128"` or
+// `"SHAKE256"`.
+pub fn xof_name(k: Sha3XofKind) -> Str []
+    todo("sha3-nv.sha3xof.xof_name")
+
+// A fresh SHAKE, ready to absorb.
+//
+// ```novo
+// use sha3xof
+//
+// fn main() [io]
+//     let x = sha3xof.xof_new(Sha3Shake256)
+//     println("${sha3xof.xof_is_sealed(x)}")   // false
+// ```
+pub fn xof_new(k: Sha3XofKind) -> Sha3Xof []
+    todo("sha3-nv.sha3xof.xof_new")
+
+// Absorb a chunk of the message.  Any length.
+//
+// A chunk fed after `xof_seal` is IGNORED rather than refused, because
+// this module returns no `Result`: an XOF's own operations cannot
+// fail, and adding an error channel to every call for one ordering
+// mistake would cost every caller a `match`.  `xof_is_sealed` is the
+// question, and asking it is cheaper than handling an error.
+//
+// ```novo
+// use std.bytes
+// use sha3xof
+//
+// fn main() [io]
+//     var x = sha3xof.xof_new(Sha3Shake128)
+//     x = sha3xof.xof_update(x, bytes.from_str("abc"))
+//     println("${sha3xof.xof_is_sealed(x)}")   // false
+// ```
+pub fn xof_update(x: Sha3Xof, data: Bytes) -> Sha3Xof []
+    todo("sha3-nv.sha3xof.xof_update")
+
+// Finish absorbing: pad, permute, and begin the output.
+//
+// Sealing an already-sealed XOF answers it unchanged, so
+// `xof_squeeze` may seal for a caller that did not.
+//
+// ```novo
+// use sha3xof
+//
+// fn main() [io]
+//     let x = sha3xof.xof_seal(sha3xof.xof_new(Sha3Shake128))
+//     println("${sha3xof.xof_is_sealed(x)}")   // true
+// ```
+pub fn xof_seal(x: Sha3Xof) -> Sha3Xof []
+    todo("sha3-nv.sha3xof.xof_seal")
+
+// Squeeze `out` full and answer the state positioned after it.
+//
+// `out` is written in place, and it is the CALLER's buffer, so it is
+// not answered as well: a `@value` struct may not be a tuple element
+// (E2015), and a caller that passed the buffer in already holds it.
+// The state is what only this call can give back.
+//
+// Seals the XOF first if it is not sealed.  Two squeezes of 16 bytes
+// give the same 32 bytes as one squeeze of 32, which is what makes
+// this the streaming form rather than a repeated one-shot.  An empty
+// buffer is not an error: it answers the state unchanged.
+//
+// ```novo
+// use std.bytes
+// use sha3xof
+//
+// fn main() [io]
+//     let first = bytes.zeros(16)
+//     let second = bytes.zeros(16)
+//     var x = sha3xof.xof_new(Sha3Shake128)
+//     x = sha3xof.xof_squeeze(x, first)
+//     x = sha3xof.xof_squeeze(x, second)
+//     println(bytes.to_hex(first))
+//     // 7f9c2ba4e88f827d616045507605853e — the first half of
+//     // SHAKE128 of the empty message
+// ```
+pub fn xof_squeeze(x: Sha3Xof, out: Bytes) -> Sha3Xof []
+    todo("sha3-nv.sha3xof.xof_squeeze")
+
+// Whether the XOF has been sealed and is producing output.
+pub fn xof_is_sealed(x: Sha3Xof) -> Bool []
+    todo("sha3-nv.sha3xof.xof_is_sealed")
+
+// How many output bytes have been squeezed so far.
+//
+// What a caller generating a key stream reports, and what a test
+// asserts when it checks that two squeezes of 16 bytes are one of 32.
+pub fn xof_squeezed(x: Sha3Xof) -> Int []
+    todo("sha3-nv.sha3xof.xof_squeezed")
+
+// SHAKE128 of a message, into a buffer the caller owns, of whatever
+// length that buffer is.
+//
+// ```novo
+// use std.bytes
+// use sha3xof
+//
+// fn main() [io]
+//     let out = sha3xof.shake128_into(bytes.from_str(""), bytes.zeros(32))
+//     println(bytes.to_hex(out))
+//     // 7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26
+// ```
+pub fn shake128_into(data: Bytes, out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3xof.shake128_into")
+
+// SHAKE256 of a message, into a buffer the caller owns.
+//
+// ```novo
+// use std.bytes
+// use sha3xof
+//
+// fn main() [io]
+//     let out = sha3xof.shake256_into(bytes.from_str(""), bytes.zeros(32))
+//     println(bytes.to_hex(out))
+//     // 46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f
+// ```
+pub fn shake256_into(data: Bytes, out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3xof.shake256_into")
+
+// SHAKE128 of a message, `out_len` bytes, allocated by this call.
+//
+// The convenience over `shake128_into` for a caller that is not
+// reusing a buffer.  `out_len` of 0 answers an empty buffer, which is
+// the correct answer and not an error.
+//
+// ```novo
+// use std.bytes
+// use sha3xof
+//
+// fn main() [io]
+//     let out = sha3xof.shake128(bytes.from_str("abc"), 32)
+//     println("${bytes.len(out)}")   // 32
+// ```
+pub fn shake128(data: Bytes, out_len: Int) -> Bytes []
+    todo("sha3-nv.sha3xof.shake128")
+
+// SHAKE256 of a message, `out_len` bytes, allocated by this call.
+//
+// ```novo
+// use std.bytes
+// use sha3xof
+//
+// fn main() [io]
+//     let out = sha3xof.shake256(bytes.from_str("abc"), 64)
+//     println("${bytes.len(out)}")   // 64
+// ```
+pub fn shake256(data: Bytes, out_len: Int) -> Bytes []
+    todo("sha3-nv.sha3xof.shake256")

@@ -1,0 +1,278 @@
+// sha3keccak — Keccak-p[1600, 24], the one primitive everything else
+// in this package is made of.
+//
+// WHAT THE PERMUTATION IS.  FIPS 202 § 3 defines a state of 1600 bits
+// laid out as five by five LANES of 64 bits, and a permutation of that
+// state built from five step mappings — theta, rho, pi, chi and iota —
+// applied 24 times.  The permutation takes 200 bytes in and gives 200
+// bytes out.  It has no key, no length and no message in it: it is a
+// fixed shuffle, and every function in this package is that shuffle
+// plus a rule about which bytes go in and which come out.
+//
+// WHY THIS MODULE HAS NO `Bytes`.  It takes and answers integers and a
+// `@value` struct, so it compiles for a microcontroller with no heap
+// allocator.  The 200-byte state lives in the caller's own stack frame
+// with no header, no reference count and nothing to free, which is
+// what lets a bootloader hash an image in flash.  `sha3hash` and the
+// modules above it speak `Bytes` and stay on the host: one host-only
+// function anywhere in a compilation unit is an undefined symbol at
+// link time on a device, whether or not the firmware calls it.
+//
+// A LANE IS AN `Int` CARRYING A BIT PATTERN, NOT A NUMBER.  A lane
+// fills all 64 bits, novo-lang's `Int` is signed, and so a lane whose
+// top bit is set reads as a negative number.  Only the bit pattern is
+// ever meaningful.  The same is true of the round constants: thirteen
+// of the 24 have their top bit set, so they cannot be written as
+// hexadecimal literals and appear in the implementation as negative
+// decimals.  crypto-nv's SHA-512 constants are written the same way.
+//
+// THE LANE INDEX IS `x + 5 * y`, which is the order FIPS 202 § 3.1.2
+// itself uses when it flattens the array.  Every function here that
+// takes an index takes it in that order, so a reader checking against
+// the standard reads the same subscripts.
+
+// Lanes in the state: five by five, which FIPS 202 § 3.1 calls A[x, y].
+pub const SHA3_LANE_COUNT = 25
+
+// Bits in one lane, which FIPS 202 calls w, for the b = 1600 instance
+// SHA-3 uses.
+pub const SHA3_LANE_BITS = 64
+
+// Bytes in the whole state: 1600 bits.
+pub const SHA3_STATE_BYTES = 200
+
+// Rounds in Keccak-p[1600, 24].  FIPS 202 § 3.4 fixes the number at
+// 12 + 2 * l, and l is 6 at this width.
+pub const SHA3_ROUNDS = 24
+
+// The 1600-bit Keccak state: twenty-five 64-bit lanes.
+//
+// A `@value` struct, so it lives in the caller's stack frame with no
+// header, no cell and no allocation.  `[Int; 25]` inside one is a true
+// inline array (SPEC § 14.4): the twenty-five words are laid out in
+// the struct itself.  Copying a state costs those twenty-five words
+// and nothing else, which is why every function here takes a state and
+// answers a new one rather than mutating in place.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     let s = sha3keccak.zero_lanes()
+//     println("${sha3keccak.lane(s, 0)}")   // 0
+// ```
+pub @value
+struct Sha3Lanes
+    // The lanes, indexed `x + 5 * y`.
+    a: [Int; 25]
+
+// The all-zero state, which is where every sponge starts.
+//
+// FIPS 202 § 4 begins absorbing from a state of 1600 zero bits.  There
+// is no initialisation vector: unlike SHA-2, whose eight starting
+// words are fractional parts of square roots, Keccak starts from
+// nothing and the domain separation happens in the padding instead.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.lane(sha3keccak.zero_lanes(), 24)}")   // 0
+// ```
+pub fn zero_lanes() -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.zero_lanes")
+
+// The lane at index `i`, counted `x + 5 * y`.
+//
+// An index outside `0 ..= 24` answers 0, because a `@value` function
+// has nowhere to put a refusal and every caller in this package passes
+// a bounded loop variable.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.lane(sha3keccak.zero_lanes(), 3)}")   // 0
+// ```
+pub fn lane(s: Sha3Lanes, i: Int) -> Int []
+    todo("sha3-nv.sha3keccak.lane")
+
+// The state with lane `i` replaced by `v`.
+//
+// An index outside `0 ..= 24` answers the state unchanged.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     let s = sha3keccak.with_lane(sha3keccak.zero_lanes(), 0, 1)
+//     println("${sha3keccak.lane(s, 0)}")   // 1
+// ```
+pub fn with_lane(s: Sha3Lanes, i: Int, v: Int) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.with_lane")
+
+// Rotate a 64-bit lane left by `n` bits, for `n` in `0 ..= 63`.
+//
+// FIPS 202 calls this ROT and writes it as a cyclic shift of the lane.
+// The rotation is by a constant at every call site in this package —
+// the offsets are a fixed table — so it is constant-time by
+// construction and no branch depends on a message bit.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.rotl64(1, 1)}")   // 2
+// ```
+pub fn rotl64(x: Int, n: Int) -> Int []
+    todo("sha3-nv.sha3keccak.rotl64")
+
+// The round constant for round `i`, for `i` in `0 ..= 23`.
+//
+// FIPS 202 § 3.2.5 derives the 24 constants from a linear feedback
+// shift register and Appendix B prints them.  The first is 1 and the
+// last is `0x8000000080008008`, which as a signed `Int` is
+// -9223372034707259384.  A round outside the range answers 0.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.round_constant(0)}")   // 1
+// ```
+pub fn round_constant(i: Int) -> Int []
+    todo("sha3-nv.sha3keccak.round_constant")
+
+// The rho rotation offset for lane `i`, counted `x + 5 * y`.
+//
+// FIPS 202 § 3.2.2 prints the twenty-five offsets as a table.  Lane 0
+// is not rotated at all, which is the one entry an implementation
+// written from the diagram usually gets wrong.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.rho_offset(0)}")   // 0
+// ```
+pub fn rho_offset(i: Int) -> Int []
+    todo("sha3-nv.sha3keccak.rho_offset")
+
+// Where lane `i` moves to under pi, counted `x + 5 * y` at both ends.
+//
+// FIPS 202 § 3.2.3 defines pi as A'[x, y] = A[x + 3y, x].  It is a
+// permutation of the twenty-five positions and nothing else: no bit of
+// a lane changes, only which lane it is.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.pi_index(0)}")   // 0
+// ```
+pub fn pi_index(i: Int) -> Int []
+    todo("sha3-nv.sha3keccak.pi_index")
+
+// The theta step: mix every lane with the parity of two neighbouring
+// columns.
+//
+// FIPS 202 § 3.2.1.  This is the step that gives Keccak its diffusion:
+// one flipped input bit reaches eleven lanes after theta alone.
+pub fn theta(s: Sha3Lanes) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.theta")
+
+// The rho and pi steps together: rotate each lane by its offset and
+// move it to its new position.
+//
+// FIPS 202 § 3.2.2 and § 3.2.3 define them separately and every
+// implementation fuses them, because rho reads each lane once and pi
+// writes each lane once.  They are fused here too, and the two
+// accessors above are what a reader checks the fusion against.
+pub fn rho_pi(s: Sha3Lanes) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.rho_pi")
+
+// The chi step: the only non-linear step, one row at a time.
+//
+// FIPS 202 § 3.2.4 defines it as A'[x] = A[x] XOR ((NOT A[x+1]) AND
+// A[x+2]) along each row of five lanes.  Everything else in the
+// permutation is linear over GF(2); this is the step the security
+// argument rests on.
+pub fn chi(s: Sha3Lanes) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.chi")
+
+// The iota step: XOR the round constant into lane 0.
+//
+// FIPS 202 § 3.2.5.  It touches one lane, and its whole purpose is to
+// break the symmetry the other four steps preserve — without it every
+// round would be identical and a state of all-equal lanes would stay
+// that way.
+pub fn iota(s: Sha3Lanes, round: Int) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.iota")
+
+// One round: theta, then rho and pi, then chi, then iota.
+//
+// Exposed because a failing implementation is bisected a round at a
+// time against the intermediate states the Keccak team publish, and a
+// caller that can only run all 24 has nothing to compare.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     let s = sha3keccak.keccak_round(sha3keccak.zero_lanes(), 0)
+//     println("${sha3keccak.lane(s, 0)}")   // 1 — iota alone, on a zero state
+// ```
+pub fn keccak_round(s: Sha3Lanes, round: Int) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.keccak_round")
+
+// Keccak-p[1600, 24]: all twenty-four rounds, in order.
+//
+// This is the whole primitive.  A sponge calls it once per rate block
+// absorbed and once per rate block squeezed, and calls nothing else.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     let s = sha3keccak.permute(sha3keccak.zero_lanes())
+//     // The permutation of the zero state is not the zero state.
+//     println("${sha3keccak.lane(s, 0) != 0}")   // true
+// ```
+pub fn permute(s: Sha3Lanes) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.permute")
+
+// The byte at `offset` in the state's little-endian byte string, for
+// `offset` in `0 ..= 199`.
+//
+// FIPS 202 § B.1 lays the state out as bytes with lane 0 first and
+// each lane written least significant byte first.  Every rate-block
+// read and write in the package goes through this order, and getting
+// it wrong produces a hash that is self-consistent and matches nothing
+// else.  An offset outside the range answers 0.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     println("${sha3keccak.state_byte(sha3keccak.zero_lanes(), 0)}")   // 0
+// ```
+pub fn state_byte(s: Sha3Lanes, offset: Int) -> Int []
+    todo("sha3-nv.sha3keccak.state_byte")
+
+// The state with byte `offset` XORed by `b`, in the same little-endian
+// byte order.
+//
+// Absorbing is XOR rather than replacement, which is what lets the
+// capacity bytes — the ones past the rate — keep their value while the
+// message is mixed into the rest.  An offset outside `0 ..= 199`
+// answers the state unchanged.
+//
+// ```novo
+// use sha3keccak
+//
+// fn main() [io]
+//     let s = sha3keccak.xor_byte(sha3keccak.zero_lanes(), 0, 0x06 as u8)
+//     println("${sha3keccak.state_byte(s, 0)}")   // 6
+// ```
+pub fn xor_byte(s: Sha3Lanes, offset: Int, b: u8) -> Sha3Lanes []
+    todo("sha3-nv.sha3keccak.xor_byte")

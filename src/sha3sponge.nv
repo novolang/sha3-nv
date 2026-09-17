@@ -1,0 +1,215 @@
+// sha3sponge — the sponge construction, and the two numbers that tell
+// every function in this package apart.
+//
+// WHAT A SPONGE IS.  FIPS 202 § 4 defines one out of three things: a
+// permutation, a RATE and a PADDING rule.  The 200-byte state is split
+// into the first `rate` bytes, which the message touches, and the rest,
+// the CAPACITY, which it never touches.  Absorbing XORs message bytes
+// into the rate and permutes whenever the rate fills.  Squeezing reads
+// bytes back out of the rate and permutes whenever it runs out.  The
+// capacity is the whole of the security argument: an attacker who
+// never sees those bytes and never writes them cannot steer the state.
+//
+// THE TWO NUMBERS.  A rate and a domain-separation byte are the only
+// difference between SHA3-256, SHAKE256, cSHAKE256 and KMAC256.  They
+// are the same permutation, absorbed and squeezed the same way.
+//
+// | function | rate | pad |
+// | --- | --- | --- |
+// | SHA3-224 | 144 | 0x06 |
+// | SHA3-256 | 136 | 0x06 |
+// | SHA3-384 | 104 | 0x06 |
+// | SHA3-512 | 72 | 0x06 |
+// | SHAKE128 | 168 | 0x1f |
+// | SHAKE256 | 136 | 0x1f |
+// | cSHAKE128, KMAC128 | 168 | 0x04 |
+// | cSHAKE256, KMAC256 | 136 | 0x04 |
+//
+// SHA3-256 and SHAKE256 have the SAME rate and differ only in that
+// byte, which is why a 32-byte SHAKE256 output is not the SHA3-256
+// digest of the same message and shares nothing with it.
+//
+// WHY THE PAD BYTE IS ONE BYTE.  FIPS 202 § 6.1 writes SHA-3's padding
+// as the message, then the two bits `01`, then the pad10*1 rule; § 6.2
+// writes SHAKE's as the four bits `1111` and then the same rule.
+// Appended least significant bit first and merged with the leading `1`
+// of pad10*1, each becomes one byte: `0x06` and `0x1f`.  The final `1`
+// of pad10*1 is the top bit of the last rate byte, which `seal` sets.
+// SP 800-185 § 3.3 gives cSHAKE the two bits `00`, which is `0x04`.
+//
+// WHY THIS MODULE HAS NO `Bytes`.  Like `sha3keccak`, it takes and
+// answers integers and a `@value` struct, so it compiles for a
+// microcontroller with no heap allocator.
+
+// The domain-separation byte of the four fixed-width SHA-3 hashes.
+pub const SHA3_PAD_HASH = 0x06
+
+// The domain-separation byte of SHAKE128 and SHAKE256.
+pub const SHA3_PAD_XOF = 0x1f
+
+// The domain-separation byte of cSHAKE, and so of KMAC.
+//
+// A cSHAKE called with an empty function name and an empty
+// customization string is defined by SP 800-185 § 3.3 to BE the plain
+// SHAKE, pad byte and all, which is the one place this table has an
+// exception rather than a row.
+pub const SHA3_PAD_CSHAKE = 0x04
+
+// A sponge over Keccak-p[1600, 24]: the state, the rate, where in the
+// rate it is, the padding byte it will finish with, and whether it has
+// finished.
+//
+// A `@value` struct holding a `@value` struct, so the whole thing —
+// 200 bytes of state and four small fields — lives in the caller's own
+// frame with nothing allocated.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     let s = sha3sponge.sponge(136, 0x06)
+//     println("${sha3sponge.rate_of(s)}")   // 136
+// ```
+pub @value
+struct Sha3Sponge
+    // The 1600-bit Keccak state.
+    lanes: Sha3Lanes
+    // How many of the 200 bytes the message touches.
+    rate: Int
+    // The byte within the rate that the next absorb or squeeze uses.
+    pos: Int
+    // The domain-separation byte `seal` will append.
+    pad: Int
+    // Set once `seal` has run: the sponge is squeezing and will absorb
+    // nothing more.
+    sealed: Bool
+
+// A fresh sponge with the given rate and domain-separation byte.
+//
+// The state is all zeros, the position is 0 and the sponge is
+// absorbing.  A rate of zero or less is not refused here — a `@value`
+// function has nowhere to put a refusal — and the `Bytes` layer above
+// answers `Sha3RateNotPositive` before it ever reaches this call.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     let s = sha3sponge.sponge(168, 0x1f)     // SHAKE128
+//     println("${sha3sponge.pad_of(s)}")       // 31
+// ```
+pub fn sponge(rate_bytes: Int, pad: Int) -> Sha3Sponge []
+    todo("sha3-nv.sha3sponge.sponge")
+
+// Absorb one message byte.
+//
+// XORs the byte into the state at the current position, steps the
+// position, and permutes when the position reaches the rate.  A byte
+// fed to a sealed sponge is IGNORED, because a `@value` function has
+// nowhere to put a refusal; `sha3hash.update` is where that ordering
+// mistake becomes `Sha3AbsorbAfterSqueeze`.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     let s = sha3sponge.absorb_byte(sha3sponge.sponge(136, 0x06), 0x61 as u8)
+//     println("${sha3sponge.position(s)}")   // 1
+// ```
+pub fn absorb_byte(s: Sha3Sponge, b: u8) -> Sha3Sponge []
+    todo("sha3-nv.sha3sponge.absorb_byte")
+
+// Finish absorbing: apply the padding and permute once.
+//
+// XORs the domain-separation byte at the current position, XORs `0x80`
+// into the last byte of the rate, permutes, and leaves the sponge
+// sealed with its position at 0.  Those two XORs are the whole of
+// pad10*1 with the domain bits merged into the leading 1.
+//
+// When the position is exactly `rate - 1` both XORs land on the same
+// byte, which is correct and is the case an implementation written
+// from the prose usually gets wrong.
+//
+// Sealing an already-sealed sponge answers it unchanged, so a caller
+// that seals twice loses nothing.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     let s = sha3sponge.seal(sha3sponge.sponge(136, 0x06))
+//     println("${sha3sponge.is_sealed(s)}")   // true
+// ```
+pub fn seal(s: Sha3Sponge) -> Sha3Sponge []
+    todo("sha3-nv.sha3sponge.seal")
+
+// The output byte at the sponge's current position.
+//
+// Meaningful only on a sealed sponge; an unsealed one answers 0, so a
+// caller that forgot to seal gets zeros rather than a plausible wrong
+// digest.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     let s = sha3sponge.seal(sha3sponge.sponge(136, 0x06))
+//     // The first byte of SHA3-256 of the empty message: 0xa7.
+//     println("${sha3sponge.squeeze_byte(s)}")
+// ```
+pub fn squeeze_byte(s: Sha3Sponge) -> Int []
+    todo("sha3-nv.sha3sponge.squeeze_byte")
+
+// Step one byte along the output, permuting when the rate runs out.
+//
+// The pair `squeeze_byte` then `squeeze_next` is how a device reads an
+// output of any length with no buffer at all: read the byte, step,
+// read the next.  An unsealed sponge answers itself unchanged.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     let s = sha3sponge.squeeze_next(sha3sponge.seal(sha3sponge.sponge(136, 0x06)))
+//     println("${sha3sponge.position(s)}")   // 1
+// ```
+pub fn squeeze_next(s: Sha3Sponge) -> Sha3Sponge []
+    todo("sha3-nv.sha3sponge.squeeze_next")
+
+// The sponge's rate in bytes.
+pub fn rate_of(s: Sha3Sponge) -> Int []
+    todo("sha3-nv.sha3sponge.rate_of")
+
+// The sponge's capacity in BITS: 1600 minus eight times the rate.
+//
+// The number a reader checks a security claim against.  FIPS 202 sets
+// the capacity to twice the security strength, so SHA3-256's capacity
+// is 512 bits and SHAKE128's is 256.
+//
+// ```novo
+// use sha3sponge
+//
+// fn main() [io]
+//     println("${sha3sponge.capacity_of(sha3sponge.sponge(136, 0x06))}")   // 512
+// ```
+pub fn capacity_of(s: Sha3Sponge) -> Int []
+    todo("sha3-nv.sha3sponge.capacity_of")
+
+// Where in the rate the next absorb or squeeze will happen.
+pub fn position(s: Sha3Sponge) -> Int []
+    todo("sha3-nv.sha3sponge.position")
+
+// The domain-separation byte this sponge will finish with.
+pub fn pad_of(s: Sha3Sponge) -> Int []
+    todo("sha3-nv.sha3sponge.pad_of")
+
+// Whether the sponge has been sealed and is squeezing.
+pub fn is_sealed(s: Sha3Sponge) -> Bool []
+    todo("sha3-nv.sha3sponge.is_sealed")
+
+// The Keccak state inside the sponge.
+//
+// For a test that compares against the intermediate states the Keccak
+// team publish, and for a caller that drives the permutation itself.
+pub fn lanes_of(s: Sha3Sponge) -> Sha3Lanes []
+    todo("sha3-nv.sha3sponge.lanes_of")

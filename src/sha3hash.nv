@@ -1,0 +1,290 @@
+// sha3hash — the four fixed-width hashes FIPS 202 defines, over
+// `Bytes`.
+//
+// ONE STATE, FOUR WIDTHS.  SHA3-224, SHA3-256, SHA3-384 and SHA3-512
+// are the same sponge with four different rates and four different
+// output lengths.  Nothing else about them differs: same permutation,
+// same padding byte, same absorbing.  So this module has one state
+// type and one set of functions, and the width is a VALUE
+// (`Sha3Width`) rather than four near-identical families.  blake2-nv
+// publishes two families because BLAKE2b and BLAKE2s really are two
+// algorithms with different word sizes; here there is one.
+//
+// THE DIGEST LENGTH IS NOT A PARAMETER.  Each width writes exactly the
+// number of bytes its name says, and `finish` refuses a buffer of any
+// other length rather than truncating.  A caller who wants 20 bytes of
+// Keccak output wants `sha3xof`, whose whole subject is an output
+// length the caller picks.  Truncating a SHA3-256 digest to 20 bytes
+// is a thing a caller may do to the bytes it was given; it is not a
+// thing this package will do quietly on the way out.
+//
+// THE OUTPUT BUFFER IS THE CALLER'S.  `finish` and `digest_into` write
+// into a buffer the caller already owns and hand it back, so hashing a
+// thousand messages needs one 32-byte buffer rather than a thousand.
+// The four named one-shots on top allocate their result, because a
+// program hashing one thing should not have to think about it.
+
+use std.bytes
+
+// Bytes SHA3-224 writes.
+pub const SHA3_224_DIGEST_BYTES = 28
+// Bytes SHA3-256 writes.
+pub const SHA3_256_DIGEST_BYTES = 32
+// Bytes SHA3-384 writes.
+pub const SHA3_384_DIGEST_BYTES = 48
+// Bytes SHA3-512 writes.
+pub const SHA3_512_DIGEST_BYTES = 64
+
+// Message bytes SHA3-224 absorbs per permutation.
+pub const SHA3_224_RATE_BYTES = 144
+// Message bytes SHA3-256 absorbs per permutation.
+pub const SHA3_256_RATE_BYTES = 136
+// Message bytes SHA3-384 absorbs per permutation.
+pub const SHA3_384_RATE_BYTES = 104
+// Message bytes SHA3-512 absorbs per permutation.
+pub const SHA3_512_RATE_BYTES = 72
+
+// Which of the four fixed-width hashes.
+//
+// The arms are named for the digest length in bits, which is how FIPS
+// 202 § 6.1 names them and how every protocol that specifies one
+// writes it.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     println(sha3hash.width_name(Sha3Width256))   // SHA3-256
+// ```
+pub enum Sha3Width
+    // SHA3-224: a 28-byte digest, 112 bits of collision resistance.
+    Sha3Width224
+    // SHA3-256: a 32-byte digest, and the one to take when nothing
+    // else has specified a width.
+    Sha3Width256
+    // SHA3-384: a 48-byte digest.
+    Sha3Width384
+    // SHA3-512: a 64-byte digest, and the slowest of the four because
+    // its rate is smallest — 72 message bytes per permutation against
+    // SHA3-224's 144.
+    Sha3Width512
+
+// A hash in progress: the sponge, and the two numbers the width fixes.
+//
+// A `@value` struct holding a `@value` sponge, so a hash runs in the
+// caller's stack frame with the heap untouched.  The width is carried
+// as the rate and the digest length rather than as the `Sha3Width`
+// value, so that this type stays a plain value and so that a reader
+// can see that the width is exactly those two numbers.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     let st = sha3hash.new(Sha3Width256)
+//     println("${sha3hash.digest_len_of(st)}")   // 32
+// ```
+pub @value
+struct Sha3State
+    // The sponge, started with this width's rate and `0x06`.
+    sponge: Sha3Sponge
+    // How many bytes `finish` will write.
+    digest_len: Int
+
+// Bytes the width's digest occupies.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     println("${sha3hash.digest_bytes(Sha3Width512)}")   // 64
+// ```
+pub fn digest_bytes(w: Sha3Width) -> Int []
+    todo("sha3-nv.sha3hash.digest_bytes")
+
+// Message bytes the width absorbs per permutation.
+//
+// The rate is 200 minus twice the digest length, which is FIPS 202's
+// rule that the capacity is twice the security strength.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     println("${sha3hash.rate_bytes(Sha3Width256)}")   // 136
+// ```
+pub fn rate_bytes(w: Sha3Width) -> Int []
+    todo("sha3-nv.sha3hash.rate_bytes")
+
+// The width's capacity in bits: twice the digest length in bits.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     println("${sha3hash.capacity_bits(Sha3Width256)}")   // 512
+// ```
+pub fn capacity_bits(w: Sha3Width) -> Int []
+    todo("sha3-nv.sha3hash.capacity_bits")
+
+// The width's name as FIPS 202 writes it: `"SHA3-224"`, `"SHA3-256"`,
+// `"SHA3-384"`, `"SHA3-512"`.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     println(sha3hash.width_name(Sha3Width384))   // SHA3-384
+// ```
+pub fn width_name(w: Sha3Width) -> Str []
+    todo("sha3-nv.sha3hash.width_name")
+
+// The width a name denotes, or `None`.
+//
+// Accepts exactly the four names above.  `"SHAKE128"` answers `None`,
+// because a SHAKE is not a fixed-width hash and asking for one here is
+// a question with no answer rather than a width to guess at.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     match sha3hash.width_named("SHA3-256")
+//         Some(_) => println("yes")
+//         None    => println("no")
+// ```
+pub fn width_named(name: Str) -> ?Sha3Width []
+    todo("sha3-nv.sha3hash.width_named")
+
+// A fresh hash state for a width.
+//
+// ```novo
+// use sha3hash
+//
+// fn main() [io]
+//     let st = sha3hash.new(Sha3Width256)
+//     println("${sha3hash.digest_len_of(st)}")   // 32
+// ```
+pub fn new(w: Sha3Width) -> Sha3State []
+    todo("sha3-nv.sha3hash.new")
+
+// Absorb a chunk of the message.
+//
+// Any length: the sponge keeps its own position in the rate, so
+// chunks need not line up with it and a caller never buffers.  This is
+// the one place SHA-3 is easier than crypto-nv's SHA-2, whose
+// `update` takes whole blocks only.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     var st = sha3hash.new(Sha3Width256)
+//     st = sha3hash.update(st, bytes.from_str("a"))
+//     st = sha3hash.update(st, bytes.from_str("bc"))
+//     println("${sha3hash.digest_len_of(st)}")   // 32
+// ```
+pub fn update(st: Sha3State, data: Bytes) -> Sha3State []
+    todo("sha3-nv.sha3hash.update")
+
+// Finish into a buffer the caller owns, and hand that buffer back.
+//
+// `out` must be exactly `digest_bytes(w)` long; any other length is
+// `Sha3OutputBufferWrong` with both numbers in it.  Calling `finish`
+// twice on one state answers the same digest both times, because the
+// state is a value and the second call has the first one's input.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     let st = sha3hash.update(sha3hash.new(Sha3Width256), bytes.from_str("abc"))
+//     match sha3hash.finish(st, bytes.zeros(32))
+//         Ok(d)  => println(bytes.to_hex(d))
+//         Err(e) => println(e.message())
+//     // 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
+// ```
+pub fn finish(st: Sha3State, out: Bytes) -> Result<Bytes, Sha3Error> []
+    todo("sha3-nv.sha3hash.finish")
+
+// How many bytes this state's `finish` will write.
+pub fn digest_len_of(st: Sha3State) -> Int []
+    todo("sha3-nv.sha3hash.digest_len_of")
+
+// Whether this state has been finished and will absorb nothing more.
+//
+// `update` on such a state answers `Sha3AbsorbAfterSqueeze` rather
+// than a digest nothing else computes.
+pub fn is_finished(st: Sha3State) -> Bool []
+    todo("sha3-nv.sha3hash.is_finished")
+
+// One call: hash `data` at width `w` into a buffer the caller owns.
+//
+// The whole of `new`, `update` and `finish` for a message already in
+// memory, with the same buffer rule.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     match sha3hash.digest_into(Sha3Width256, bytes.from_str("abc"), bytes.zeros(32))
+//         Ok(d)  => println(bytes.to_hex(d))
+//         Err(e) => println(e.message())
+// ```
+pub fn digest_into(w: Sha3Width, data: Bytes, out: Bytes) -> Result<Bytes, Sha3Error> []
+    todo("sha3-nv.sha3hash.digest_into")
+
+// SHA3-224 of a message, into a buffer this call allocates.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     println(bytes.to_hex(sha3hash.sha3_224(bytes.from_str("abc"))))
+//     // e642824c3f8cf24ad09234ee7d3c766fc9a3a5168d0c94ad73b46fdf
+// ```
+pub fn sha3_224(data: Bytes) -> Bytes []
+    todo("sha3-nv.sha3hash.sha3_224")
+
+// SHA3-256 of a message, into a buffer this call allocates.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     println(bytes.to_hex(sha3hash.sha3_256(bytes.from_str("abc"))))
+//     // 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
+// ```
+pub fn sha3_256(data: Bytes) -> Bytes []
+    todo("sha3-nv.sha3hash.sha3_256")
+
+// SHA3-384 of a message, into a buffer this call allocates.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     let d = sha3hash.sha3_384(bytes.from_str("abc"))
+//     println("${bytes.len(d)}")   // 48
+// ```
+pub fn sha3_384(data: Bytes) -> Bytes []
+    todo("sha3-nv.sha3hash.sha3_384")
+
+// SHA3-512 of a message, into a buffer this call allocates.
+//
+// ```novo
+// use std.bytes
+// use sha3hash
+//
+// fn main() [io]
+//     let d = sha3hash.sha3_512(bytes.from_str("abc"))
+//     println("${bytes.len(d)}")   // 64
+// ```
+pub fn sha3_512(data: Bytes) -> Bytes []
+    todo("sha3-nv.sha3hash.sha3_512")

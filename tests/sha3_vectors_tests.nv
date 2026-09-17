@@ -1,0 +1,190 @@
+// tests/sha3_vectors_tests.nv — the known answers FIPS 202 and the
+// NIST example files print, for the four hashes and the two XOFs.
+//
+// They COMPILE today and they FAIL at run, with `not implemented:
+// sha3-nv.<module>.<fn>` from the `todo()` that is each body.  That is
+// the expected state of an interface release: the compiler has checked
+// every signature, every type and every effect row, and nothing else
+// has been checked because there is nothing else yet.
+//
+// WHERE THE VECTORS COME FROM.  FIPS 202 defines the functions, and
+// NIST publishes the byte-oriented known answers as
+// `SHA3_256ShortMsg.rsp` and its siblings in the Cryptographic
+// Algorithm Validation Program.  The digests of the empty message and
+// of `"abc"` below are the two every implementation is checked against
+// first, and they are the ones a failing port bisects from.  The
+// reference implementations to compare a port against are RustCrypto's
+// `sha3` crate and CPython's `hashlib`.
+
+use std.test
+use std.bytes
+use sha3hash
+use sha3xof
+
+// A hex literal as bytes.  The `??` is for the parse, which cannot
+// fail on a literal written correctly here.
+fn hex(s: Str) -> Bytes
+    bytes.from_hex(s) ?? bytes.zeros(0)
+
+@test
+fn test_sha3_of_the_empty_message_at_all_four_widths() [io]
+    // The empty message is the vector that catches a padding bug and
+    // nothing else, because there is no message to get right.
+    let empty = bytes.from_str("")
+
+    test.case("SHA3-224 of the empty message")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_224(empty)),
+        "6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7")
+
+    test.case("SHA3-256 of the empty message")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_256(empty)),
+        "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+
+    test.case("SHA3-384 of the empty message")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_384(empty)),
+        "0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2a"
+        + "c3713831264adb47fb6bd1e058d5f004")
+
+    test.case("SHA3-512 of the empty message")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_512(empty)),
+        "a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a6"
+        + "15b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26")
+
+@test
+fn test_sha3_of_abc_at_all_four_widths() [io]
+    let abc = bytes.from_str("abc")
+
+    test.case("SHA3-224 of \"abc\"")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_224(abc)),
+        "e642824c3f8cf24ad09234ee7d3c766fc9a3a5168d0c94ad73b46fdf")
+
+    test.case("SHA3-256 of \"abc\"")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_256(abc)),
+        "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+
+    test.case("SHA3-384 of \"abc\"")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_384(abc)),
+        "ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b2"
+        + "98d88cea927ac7f539f1edf228376d25")
+
+    test.case("SHA3-512 of \"abc\"")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_512(abc)),
+        "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e"
+        + "10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0")
+
+@test
+fn test_a_narrower_sha3_digest_is_not_a_prefix_of_a_wider_one() [io]
+    // The rule a caller most often assumes the other way round.  The
+    // four widths have four different rates and four different
+    // capacities, so they are four different functions of the message
+    // and share no bytes at all.
+    let abc = bytes.from_str("abc")
+    let d224 = bytes.to_hex(sha3hash.sha3_224(abc))
+    let d256 = bytes.to_hex(sha3hash.sha3_256(abc))
+
+    test.case("SHA3-224 of a message is not the front of its SHA3-256")
+    test.assert(not str.starts_with(d256, d224))
+
+@test
+fn test_the_streaming_form_answers_what_the_one_shot_does() [io]
+    // Chunks need not line up with the rate: the sponge keeps its own
+    // position, so a caller never buffers.  This is the one place
+    // SHA-3 is easier than crypto-nv's SHA-2, whose `update` takes
+    // whole blocks only.
+    var st = sha3hash.new(Sha3Width256)
+    st = sha3hash.update(st, bytes.from_str("a"))
+    st = sha3hash.update(st, bytes.from_str("b"))
+    st = sha3hash.update(st, bytes.from_str("c"))
+
+    test.case("three one-byte updates are the digest of \"abc\"")
+    match sha3hash.finish(st, bytes.zeros(32))
+        Ok(d)  => test.assert_eq_str(bytes.to_hex(d),
+            "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_the_output_buffer_is_the_callers_and_its_length_is_checked() [io]
+    // A fixed-width hash writes exactly the number of bytes its name
+    // says.  A buffer of another length is a mistake, not a
+    // truncation request, and the refusal carries both numbers.
+    test.case("a 16-byte buffer for SHA3-256 is refused with both numbers")
+    match sha3hash.digest_into(Sha3Width256, bytes.from_str("abc"), bytes.zeros(16))
+        Ok(_)  => test.fail("a short buffer must be refused, not truncated into")
+        Err(e) =>
+            test.assert(sha3err.is_length_fault(e))
+            test.assert_eq_str(sha3err.code(e), "output-buffer-wrong")
+
+    test.case("the right length is accepted and the buffer comes back")
+    match sha3hash.digest_into(Sha3Width256, bytes.from_str("abc"), bytes.zeros(32))
+        Ok(d)  => test.assert_eq(bytes.len(d), 32)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_shake_of_the_empty_message_at_thirty_two_bytes() [io]
+    let empty = bytes.from_str("")
+
+    test.case("SHAKE128 of the empty message, 32 bytes")
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake128_into(empty, bytes.zeros(32))),
+        "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26")
+
+    test.case("SHAKE256 of the empty message, 32 bytes")
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake256_into(empty, bytes.zeros(32))),
+        "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f")
+
+@test
+fn test_a_shake_output_is_a_prefix_of_every_longer_one() [io]
+    // The rule that distinguishes an XOF from a fixed-width hash, and
+    // the reverse of the SHA-3 rule two tests above.  No length is
+    // mixed into the state, so the first 32 bytes of a 64-byte output
+    // ARE the 32-byte output.
+    let empty = bytes.from_str("")
+    let long = bytes.to_hex(sha3xof.shake128(empty, 64))
+    let short = bytes.to_hex(sha3xof.shake128(empty, 32))
+
+    test.case("SHAKE128 at 32 bytes is the front of SHAKE128 at 64")
+    test.assert(str.starts_with(long, short))
+
+@test
+fn test_squeezing_is_resumable_and_the_pieces_concatenate() [io]
+    // Two squeezes of 16 bytes give the same 32 bytes as one squeeze
+    // of 32.  That is what makes `xof_squeeze` a streaming form rather
+    // than a repeated one-shot.
+    let first = bytes.zeros(16)
+    let second = bytes.zeros(16)
+    var x = sha3xof.xof_new(Sha3Shake128)
+    x = sha3xof.xof_squeeze(x, first)
+    x = sha3xof.xof_squeeze(x, second)
+
+    test.case("the two halves are SHAKE128 of the empty message")
+    test.assert_eq_str(bytes.to_hex(first) + bytes.to_hex(second),
+        "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26")
+
+    test.case("and the state has counted the bytes it gave out")
+    test.assert_eq(sha3xof.xof_squeezed(x), 32)
+
+@test
+fn test_shake256_is_not_sha3_256_although_the_rate_is_the_same() [io]
+    // Both absorb 136 message bytes per permutation.  They differ in
+    // one byte of padding — 0x1f against 0x06 — and that is enough to
+    // make them unrelated functions.
+    let empty = bytes.from_str("")
+    test.case("SHAKE256 at 32 bytes is not the SHA3-256 digest")
+    test.assert(bytes.to_hex(sha3xof.shake256(empty, 32))
+                != bytes.to_hex(sha3hash.sha3_256(empty)))
+
+@test
+fn test_a_long_message_crosses_the_rate_boundary() [io]
+    // 200 bytes is longer than every rate FIPS 202 defines, so this
+    // message is absorbed with at least one permutation in the middle
+    // for all four widths and both XOFs.  A digest that is right for
+    // "abc" and wrong here is a rate-boundary bug.
+    let long = hex(str.repeat("a3", 200))
+
+    test.case("SHA3-256 of 200 bytes of 0xa3 is 32 bytes")
+    test.assert_eq(bytes.len(sha3hash.sha3_256(long)), 32)
+
+    test.case("SHA3-512, whose 72-byte rate this message crosses twice")
+    test.assert_eq(bytes.len(sha3hash.sha3_512(long)), 64)
+
+    test.case("SHAKE128, whose 168-byte rate it crosses once")
+    test.assert_eq(bytes.len(sha3xof.shake128(long, 32)), 32)

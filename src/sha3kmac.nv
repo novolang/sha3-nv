@@ -1,0 +1,350 @@
+// sha3kmac — cSHAKE and KMAC, from NIST SP 800-185.
+//
+// WHAT SP 800-185 ADDS.  FIPS 202 gives a hash and an XOF and nothing
+// else.  SP 800-185 builds four functions on top of the SHAKEs, of
+// which this package publishes two: cSHAKE, a SHAKE with a NAME and a
+// CUSTOMIZATION string mixed in, and KMAC, a keyed message
+// authentication code built on cSHAKE.
+//
+// WHY cSHAKE EXISTS.  Two protocols that both hash the same message
+// with SHAKE256 get the same bytes, and one of them can replay the
+// other's output.  A customization string is a domain separator the
+// caller chooses: `cSHAKE256(msg, L, "", "my-protocol v3")` and
+// `cSHAKE256(msg, L, "", "my-protocol v4")` are unrelated functions of
+// the same message.  The function name is the other half, reserved for
+// NIST-defined functions — `"KMAC"` is one — so an application uses
+// the customization string and leaves the name empty.
+//
+// cSHAKE WITH TWO EMPTY STRINGS IS SHAKE.  SP 800-185 § 3.3 says so
+// explicitly, and it is a rule and not an optimisation: the pad byte
+// reverts to `0x1f` and the message is absorbed with no prefix at all.
+// An implementation that used `0x04` and an empty prefix would produce
+// a function nothing else computes.
+//
+// WHY KMAC IS NOT HMAC.  HMAC exists because SHA-2 leaks its state at
+// the end of a message: an attacker who knows H(k || m) can compute
+// H(k || m || more), so the key has to be applied twice.  A sponge
+// does not leak its state — that is what the capacity is for — so
+// KMAC absorbs the key once, at the front, and costs one pass.
+// crypto-nv's `hashing.hmac_sha256` is the two-pass construction for
+// SHA-2; this is the one-pass construction for Keccak, and a protocol
+// choosing between them is choosing a hash family, not a MAC style.
+//
+// THE OUTPUT LENGTH IS PART OF THE MESSAGE.  SP 800-185 § 4.3 appends
+// `right_encode(L)` — the requested output length in bits — to the
+// message before the final absorb.  So a 32-byte KMAC and a 64-byte
+// KMAC of the same message under the same key are unrelated values,
+// and the first 32 bytes of the second are not the first.  That is why
+// the output length is not in `Sha3Kmac`: `kmac_finish` learns it from
+// the buffer it is handed, at the one moment it can still be encoded.
+
+use std.bytes
+use sha3xof
+
+// The function name SP 800-185 § 4.3 reserves for KMAC, as it is
+// spelled into every KMAC computation: `"KMAC"`.
+pub const KMAC_FUNCTION_NAME = "KMAC"
+
+// A KMAC in progress: a cSHAKE that has already absorbed the padded
+// key block.
+//
+// A `@value` struct over `Sha3Xof`, which is a `@value` struct over
+// the sponge, so a MAC runs in the caller's frame with nothing
+// allocated.  The output length is deliberately not a field; see the
+// note at the top of this module.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let m = sha3kmac.kmac_new(Sha3Shake128, bytes.zeros(32), bytes.from_str(""))
+//     println("${sha3kmac.kmac_rate_bytes(m)}")   // 168
+// ```
+pub @value
+struct Sha3Kmac
+    // The cSHAKE underneath, with `bytepad(encode_string(key), rate)`
+    // already absorbed.
+    xof: Sha3Xof
+
+// `left_encode(n)`: the number `n`, with its own byte count in FRONT.
+//
+// SP 800-185 § 2.3.1.  One byte saying how many bytes follow, then `n`
+// big-endian in that many bytes.  `left_encode(0)` is the two bytes
+// `01 00`, which is the case a from-the-prose implementation gets
+// wrong by writing one byte or none.
+//
+// A negative `n` answers the encoding of 0, because a length is never
+// negative and a refusal here would put a `Result` on four functions
+// that cannot otherwise fail.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     println(bytes.to_hex(sha3kmac.left_encode(0)))     // 0100
+//     println(bytes.to_hex(sha3kmac.left_encode(256)))   // 020100
+// ```
+pub fn left_encode(n: Int) -> Bytes []
+    todo("sha3-nv.sha3kmac.left_encode")
+
+// `right_encode(n)`: the number `n`, with its own byte count AFTER.
+//
+// SP 800-185 § 2.3.1, and the mirror of `left_encode`.
+// `right_encode(0)` is the two bytes `00 01`.  It is used at the end
+// of a KMAC message, where a reader parsing backwards has to find the
+// length.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     println(bytes.to_hex(sha3kmac.right_encode(0)))     // 0001
+//     println(bytes.to_hex(sha3kmac.right_encode(256)))   // 010002
+// ```
+pub fn right_encode(n: Int) -> Bytes []
+    todo("sha3-nv.sha3kmac.right_encode")
+
+// `encode_string(s)`: `left_encode` of the length in BITS, then the
+// bytes.
+//
+// SP 800-185 § 2.3.2.  The length is in bits and not bytes, which is
+// the single most common mistake in a hand-written KMAC: a 32-byte key
+// encodes as `01 00` — no — as the bit count 256, which is
+// `left_encode(256)`, three bytes.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     println(bytes.to_hex(sha3kmac.encode_string(bytes.from_str(""))))   // 0100
+// ```
+pub fn encode_string(s: Bytes) -> Bytes []
+    todo("sha3-nv.sha3kmac.encode_string")
+
+// `bytepad(x, w)`: `left_encode(w)`, then `x`, then zeros to a
+// multiple of `w`.
+//
+// SP 800-185 § 2.3.3.  `w` is the sponge's rate, so the key block is
+// exactly one or more whole permutations of input and the message
+// that follows starts on a block boundary.  A `w` of zero or less
+// answers `x` unchanged.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let p = sha3kmac.bytepad(sha3kmac.encode_string(bytes.from_str("")), 168)
+//     println("${bytes.len(p)}")   // 168
+// ```
+pub fn bytepad(x: Bytes, w: Int) -> Bytes []
+    todo("sha3-nv.sha3kmac.bytepad")
+
+// A cSHAKE, ready to absorb the message.
+//
+// `function_name` is the NIST-reserved name and is empty for an
+// application; `customization` is the caller's own domain separator.
+// Both empty answers a plain SHAKE of the same kind, pad byte and all,
+// as SP 800-185 § 3.3 requires.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let c = sha3kmac.cshake_new(Sha3Shake128,
+//                                 bytes.from_str(""),
+//                                 bytes.from_str("Email Signature"))
+//     println("${sha3xof.xof_is_sealed(c)}")   // false
+// ```
+pub fn cshake_new(k: Sha3XofKind, function_name: Bytes, customization: Bytes) -> Sha3Xof []
+    todo("sha3-nv.sha3kmac.cshake_new")
+
+// cSHAKE128 in one call, into a buffer the caller owns.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let out = sha3kmac.cshake128_into(bytes.from_hex("00010203") ?? bytes.zeros(0),
+//                                       bytes.from_str(""),
+//                                       bytes.from_str("Email Signature"),
+//                                       bytes.zeros(32))
+//     println(bytes.to_hex(out))
+//     // c1c36925b6409a04f1b504fcbca9d82b4017277cb5ed2b2065fc1d3814d5aaf5
+// ```
+pub fn cshake128_into(data: Bytes, function_name: Bytes, customization: Bytes,
+                      out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3kmac.cshake128_into")
+
+// cSHAKE256 in one call, into a buffer the caller owns.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let out = sha3kmac.cshake256_into(bytes.from_str("abc"),
+//                                       bytes.from_str(""),
+//                                       bytes.from_str("my-protocol v3"),
+//                                       bytes.zeros(64))
+//     println("${bytes.len(out)}")   // 64
+// ```
+pub fn cshake256_into(data: Bytes, function_name: Bytes, customization: Bytes,
+                      out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3kmac.cshake256_into")
+
+// A KMAC, with the key already absorbed.
+//
+// The key is `bytepad(encode_string(key), rate)`, so it occupies whole
+// permutations of input and the message that follows starts on a block
+// boundary.  A key of any length is admitted, including an empty one;
+// SP 800-185 § 4 places no minimum on it, and the security of the MAC
+// is the security of the key the caller chose.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let m = sha3kmac.kmac_new(Sha3Shake128, bytes.zeros(32), bytes.from_str(""))
+//     println("${sha3kmac.kmac_rate_bytes(m)}")   // 168
+// ```
+pub fn kmac_new(k: Sha3XofKind, key: Bytes, customization: Bytes) -> Sha3Kmac []
+    todo("sha3-nv.sha3kmac.kmac_new")
+
+// Absorb a chunk of the message.  Any length.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     var m = sha3kmac.kmac_new(Sha3Shake128, bytes.zeros(32), bytes.from_str(""))
+//     m = sha3kmac.kmac_update(m, bytes.from_str("abc"))
+//     println("${sha3kmac.kmac_rate_bytes(m)}")   // 168
+// ```
+pub fn kmac_update(m: Sha3Kmac, data: Bytes) -> Sha3Kmac []
+    todo("sha3-nv.sha3kmac.kmac_update")
+
+// Finish a KMAC into a buffer the caller owns, and hand it back.
+//
+// Appends `right_encode(8 * len(out))` and squeezes exactly that many
+// bytes.  An empty buffer is `Sha3EmptyOutput`: a zero-length KMAC is
+// not the empty string, it is a different function, and SP 800-185
+// spells that other function `KMACXOF`.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let m = sha3kmac.kmac_update(
+//                 sha3kmac.kmac_new(Sha3Shake128, bytes.zeros(32), bytes.from_str("")),
+//                 bytes.from_str("abc"))
+//     match sha3kmac.kmac_finish(m, bytes.zeros(32))
+//         Ok(tag) => println("${bytes.len(tag)}")   // 32
+//         Err(e)  => println(e.message())
+// ```
+pub fn kmac_finish(m: Sha3Kmac, out: Bytes) -> Result<Bytes, Sha3Error> []
+    todo("sha3-nv.sha3kmac.kmac_finish")
+
+// Finish a KMAC in its extendable-output form, into a buffer the
+// caller owns.
+//
+// Appends `right_encode(0)` instead of the length, which is what makes
+// the output extendable: the bytes do not depend on how many were
+// asked for, so a caller may squeeze 32 now and 32 more later.  An
+// empty buffer is admitted here and answers an empty buffer.
+//
+// KMACXOF and KMAC of the same length are DIFFERENT values.  A
+// protocol must say which it uses.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let m = sha3kmac.kmac_new(Sha3Shake256, bytes.zeros(32), bytes.from_str(""))
+//     let out = sha3kmac.kmac_finish_xof(m, bytes.zeros(64))
+//     println("${bytes.len(out)}")   // 64
+// ```
+pub fn kmac_finish_xof(m: Sha3Kmac, out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3kmac.kmac_finish_xof")
+
+// The rate of the sponge underneath a KMAC: 168 for KMAC128, 136 for
+// KMAC256.
+//
+// The number `bytepad` padded the key to, which a test asserts and a
+// reader checks against SP 800-185 § 4.3.
+pub fn kmac_rate_bytes(m: Sha3Kmac) -> Int []
+    todo("sha3-nv.sha3kmac.kmac_rate_bytes")
+
+// KMAC128 in one call, into a buffer the caller owns.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let key = bytes.from_hex("404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f")
+//                   ?? bytes.zeros(32)
+//     let data = bytes.from_hex("00010203") ?? bytes.zeros(0)
+//     match sha3kmac.kmac128(key, data, bytes.from_str(""), bytes.zeros(32))
+//         Ok(tag) => println(bytes.to_hex(tag))
+//         Err(e)  => println(e.message())
+//     // e5780b0d3ea6f7d3a429c5706aa43a00fadbd7d49628839e3187243f456ee14e
+// ```
+pub fn kmac128(key: Bytes, data: Bytes, customization: Bytes,
+               out: Bytes) -> Result<Bytes, Sha3Error> []
+    todo("sha3-nv.sha3kmac.kmac128")
+
+// KMAC256 in one call, into a buffer the caller owns.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     match sha3kmac.kmac256(bytes.zeros(32), bytes.from_str("abc"),
+//                            bytes.from_str("My Tagged Application"),
+//                            bytes.zeros(64))
+//         Ok(tag) => println("${bytes.len(tag)}")   // 64
+//         Err(e)  => println(e.message())
+// ```
+pub fn kmac256(key: Bytes, data: Bytes, customization: Bytes,
+               out: Bytes) -> Result<Bytes, Sha3Error> []
+    todo("sha3-nv.sha3kmac.kmac256")
+
+// KMAC128 in its extendable-output form, in one call.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let out = sha3kmac.kmac128_xof(bytes.zeros(32), bytes.from_str("abc"),
+//                                    bytes.from_str(""), bytes.zeros(32))
+//     println("${bytes.len(out)}")   // 32
+// ```
+pub fn kmac128_xof(key: Bytes, data: Bytes, customization: Bytes, out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3kmac.kmac128_xof")
+
+// KMAC256 in its extendable-output form, in one call.
+//
+// ```novo
+// use std.bytes
+// use sha3kmac
+//
+// fn main() [io]
+//     let out = sha3kmac.kmac256_xof(bytes.zeros(32), bytes.from_str("abc"),
+//                                    bytes.from_str(""), bytes.zeros(64))
+//     println("${bytes.len(out)}")   // 64
+// ```
+pub fn kmac256_xof(key: Bytes, data: Bytes, customization: Bytes, out: Bytes) -> Bytes []
+    todo("sha3-nv.sha3kmac.kmac256_xof")

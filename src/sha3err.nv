@@ -1,0 +1,103 @@
+// sha3err — the refusals, and why there are so few of them.
+//
+// Keccak absorbs any message and squeezes any number of bytes, so
+// nothing about the MESSAGE can be wrong, and the SP 800-185 length
+// encodings carry every number a novo-lang `Int` can hold.  Every
+// refusal in this package is therefore about a LENGTH the caller chose
+// or an ORDER the caller used, and the two questions a program asks
+// about a failure — "did I size a buffer wrong" and "did I call these
+// in the wrong order" — are the two predicates below.
+//
+// The one refusal that is neither is `Sha3RateNotPositive`, and it
+// exists because `sha3sponge.sponge` takes a rate as a number: a rate
+// of zero would divide by zero in the implementation and answer
+// nothing here.
+
+// What a call in this package refuses with.
+//
+// Every arm carries the numbers a message needs, so a report can say
+// what was asked for and what was given instead of "invalid
+// argument".
+pub enum Sha3Error
+    // The output buffer is not the length the fixed-width hash
+    // produces.  SHA3-256 writes 32 bytes and nothing else, so a
+    // buffer of another length is a mistake rather than a truncation
+    // request; `sha3xof` is where a caller who wants n bytes goes.
+    Sha3OutputBufferWrong(want: Int, got: Int)
+    // An output of zero bytes was asked for where the construction
+    // forbids it.  KMAC's output length is encoded into the message it
+    // authenticates (SP 800-185 § 4.3), so a zero-length KMAC is a
+    // different value from an empty squeeze and not a value at all.
+    Sha3EmptyOutput
+    // More input was fed to a state that has already produced output.
+    // A sponge pads once; after the padding it is squeezing, and
+    // absorbing again would give an answer no other implementation
+    // computes.
+    Sha3AbsorbAfterSqueeze
+    // A sponge was asked for with a rate of zero or less.  A rate is
+    // how many bytes of the 200-byte state the message touches, and
+    // every rate FIPS 202 defines is between 72 and 168.
+    Sha3RateNotPositive(rate: Int)
+
+// message renders the refusal as one line of prose, with the numbers
+// in it.
+//
+// `Result<_, Sha3Error>` requires this impl: SPEC § 3.4 admits a
+// `Result` error type only if it implements `Error`.
+impl Error for Sha3Error
+    // Answer the one-line report: what was refused, and with which
+    // numbers.
+    //
+    // ```novo
+    // use sha3err
+    //
+    // fn main() [io]
+    //     let e = Sha3OutputBufferWrong(want: 32, got: 16)
+    //     println(e.message())
+    //     // sha3: the output buffer is 16 bytes and SHA3-256 writes 32
+    // ```
+    fn message(self) -> Str
+        todo("sha3-nv.sha3err.Sha3Error.message")
+
+// Whether the refusal is about a length the caller chose.
+//
+// True for `Sha3OutputBufferWrong`, `Sha3EmptyOutput` and
+// `Sha3RateNotPositive`.  A program that sizes its buffers from this
+// package's own constants never sees one.
+//
+// ```novo
+// use sha3err
+//
+// fn main() [io]
+//     println("${sha3err.is_length_fault(Sha3EmptyOutput)}")   // true
+// ```
+pub fn is_length_fault(e: Sha3Error) -> Bool []
+    todo("sha3-nv.sha3err.is_length_fault")
+
+// Whether the refusal is about the order two calls were made in.
+//
+// True for `Sha3AbsorbAfterSqueeze` alone.  It separates a caller that
+// sized something wrong from a caller whose state machine is wrong,
+// which are different bugs and different fixes.
+//
+// ```novo
+// use sha3err
+//
+// fn main() [io]
+//     println("${sha3err.is_order_fault(Sha3AbsorbAfterSqueeze)}")   // true
+// ```
+pub fn is_order_fault(e: Sha3Error) -> Bool []
+    todo("sha3-nv.sha3err.is_order_fault")
+
+// The refusal as a short stable token, for a log that is grepped
+// rather than read: `"output-buffer-wrong"`, `"empty-output"`,
+// `"absorb-after-squeeze"`, `"rate-not-positive"`.
+//
+// ```novo
+// use sha3err
+//
+// fn main() [io]
+//     println(sha3err.code(Sha3EmptyOutput))   // empty-output
+// ```
+pub fn code(e: Sha3Error) -> Str []
+    todo("sha3-nv.sha3err.code")

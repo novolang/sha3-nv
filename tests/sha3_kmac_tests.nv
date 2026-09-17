@@ -1,0 +1,262 @@
+// tests/sha3_kmac_tests.nv — the SP 800-185 encodings, cSHAKE and
+// KMAC, against NIST's own example values.
+//
+// RED ON PURPOSE, like every suite here: each assertion reaches
+// `not implemented: sha3-nv.<module>.<fn>`.
+//
+// WHERE THE VECTORS COME FROM.  NIST publishes example values for
+// cSHAKE128, cSHAKE256, KMAC128 and KMAC256 beside SP 800-185.  Sample
+// 1 of cSHAKE128 hashes the four bytes 00 01 02 03 with an empty
+// function name and the customization string "Email Signature".
+// Samples 1 and 2 of KMAC128 use the 32-byte key 40 41 ... 5f over the
+// same four bytes, with an empty customization string and then with
+// "My Tagged Application".  The encodings below are read straight off
+// § 2.3.
+
+use std.test
+use std.bytes
+use sha3kmac
+use sha3xof
+
+fn hex(s: Str) -> Bytes
+    bytes.from_hex(s) ?? bytes.zeros(0)
+
+// The 32-byte key NIST's KMAC samples use: 40 41 42 ... 5f.
+fn sample_key() -> Bytes
+    hex("404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f")
+
+// The four data bytes those samples authenticate.
+fn sample_data() -> Bytes
+    hex("00010203")
+
+@test
+fn test_left_encode_puts_the_byte_count_in_front() [io]
+    // SP 800-185 § 2.3.1.  `left_encode(0)` is two bytes, not one and
+    // not none, and that is the case a from-the-prose implementation
+    // gets wrong.
+    test.case("left_encode(0) is 01 00")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(0)), "0100")
+
+    test.case("left_encode(1) is 01 01")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(1)), "0101")
+
+    test.case("left_encode(255) is one length byte")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(255)), "01ff")
+
+    test.case("left_encode(256) needs two, big-endian")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(256)), "020100")
+
+    test.case("a negative length answers the encoding of 0")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(-1)), "0100")
+
+@test
+fn test_right_encode_puts_the_byte_count_after() [io]
+    test.case("right_encode(0) is 00 01")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.right_encode(0)), "0001")
+
+    test.case("right_encode(256) is 01 00 02")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.right_encode(256)), "010002")
+
+    test.case("the two encodings are mirrors, not the same bytes")
+    test.assert(bytes.to_hex(sha3kmac.left_encode(0))
+                != bytes.to_hex(sha3kmac.right_encode(0)))
+
+@test
+fn test_encode_string_writes_the_length_in_bits_not_bytes() [io]
+    // The single most common mistake in a hand-written KMAC.
+    test.case("the empty string encodes as left_encode(0)")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.encode_string(bytes.from_str(""))), "0100")
+
+    test.case("a 32-byte key encodes its 256 BITS, then its bytes")
+    let enc = sha3kmac.encode_string(sample_key())
+    test.assert(str.starts_with(bytes.to_hex(enc), "020100"))
+    test.assert_eq(bytes.len(enc), 3 + 32)
+
+@test
+fn test_bytepad_pads_the_key_to_a_whole_number_of_permutations() [io]
+    // SP 800-185 § 2.3.3.  `w` is the rate, so the message that
+    // follows the key starts on a block boundary.
+    test.case("bytepad to 168 is 168 bytes for a short input")
+    test.assert_eq(bytes.len(sha3kmac.bytepad(
+        sha3kmac.encode_string(bytes.from_str("")), 168)),
+        168)
+
+    test.case("it begins with left_encode(w)")
+    test.assert(str.starts_with(
+        bytes.to_hex(sha3kmac.bytepad(sha3kmac.encode_string(sample_key()), 168)),
+        bytes.to_hex(sha3kmac.left_encode(168))))
+
+    test.case("bytepad to 136 for KMAC256, and still a whole multiple")
+    test.assert_eq(bytes.len(sha3kmac.bytepad(
+        sha3kmac.encode_string(sample_key()), 136)),
+        136)
+
+    test.case("a width of zero or less answers the input unchanged")
+    test.assert_eq(bytes.len(sha3kmac.bytepad(bytes.from_str("abc"), 0)), 3)
+
+@test
+fn test_cshake_sample_one() [io]
+    // SP 800-185 example values, cSHAKE128 sample 1: no function name,
+    // the customization string "Email Signature", 32 bytes out.
+    test.case("cSHAKE128 of 00 01 02 03 under \"Email Signature\"")
+    let out = sha3kmac.cshake128_into(sample_data(),
+                                      bytes.from_str(""),
+                                      bytes.from_str("Email Signature"),
+                                      bytes.zeros(32))
+    test.assert_eq_str(bytes.to_hex(out),
+        "c1c36925b6409a04f1b504fcbca9d82b4017277cb5ed2b2065fc1d3814d5aaf5")
+
+@test
+fn test_cshake_with_two_empty_strings_is_shake() [io]
+    // SP 800-185 § 3.3 says so explicitly.  It is a rule, not an
+    // optimisation: the pad byte reverts to 0x1f and the message is
+    // absorbed with no prefix at all.
+    let empty = bytes.from_str("")
+
+    test.case("cSHAKE128 with no name and no customization is SHAKE128")
+    test.assert_eq_str(
+        bytes.to_hex(sha3kmac.cshake128_into(empty, empty, empty, bytes.zeros(32))),
+        bytes.to_hex(sha3xof.shake128_into(empty, bytes.zeros(32))))
+
+    test.case("and the same holds at 256")
+    test.assert_eq_str(
+        bytes.to_hex(sha3kmac.cshake256_into(empty, empty, empty, bytes.zeros(32))),
+        bytes.to_hex(sha3xof.shake256_into(empty, bytes.zeros(32))))
+
+@test
+fn test_a_customization_string_makes_an_unrelated_function() [io]
+    // What cSHAKE is for: two protocols hashing the same message do
+    // not get the same bytes.
+    let msg = bytes.from_str("abc")
+    let empty = bytes.from_str("")
+    let v3 = sha3kmac.cshake256_into(msg, empty, bytes.from_str("my-protocol v3"),
+                                     bytes.zeros(32))
+    let v4 = sha3kmac.cshake256_into(msg, empty, bytes.from_str("my-protocol v4"),
+                                     bytes.zeros(32))
+
+    test.case("one character of customization changes every byte")
+    test.assert(bytes.to_hex(v3) != bytes.to_hex(v4))
+
+@test
+fn test_kmac128_sample_one_and_two() [io]
+    test.case("KMAC128 with an empty customization string")
+    match sha3kmac.kmac128(sample_key(), sample_data(), bytes.from_str(""),
+                           bytes.zeros(32))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "e5780b0d3ea6f7d3a429c5706aa43a00fadbd7d49628839e3187243f456ee14e")
+        Err(e)  => test.fail(e.message())
+
+    test.case("KMAC128 with \"My Tagged Application\"")
+    match sha3kmac.kmac128(sample_key(), sample_data(),
+                           bytes.from_str("My Tagged Application"), bytes.zeros(32))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "3b1fba963cd8b0b59e8c1a6d71888b7143651af8ba0a7070c0979e2811324aa5")
+        Err(e)  => test.fail(e.message())
+
+@test
+fn test_the_output_length_is_part_of_the_kmac_message() [io]
+    // SP 800-185 § 4.3 appends right_encode(L) before the final
+    // absorb, so a 32-byte KMAC and a 64-byte KMAC of the same message
+    // under the same key are unrelated values.
+    let empty = bytes.from_str("")
+    match sha3kmac.kmac128(sample_key(), sample_data(), empty, bytes.zeros(64))
+        Err(e)   => test.fail(e.message())
+        Ok(long) =>
+            match sha3kmac.kmac128(sample_key(), sample_data(), empty, bytes.zeros(32))
+                Err(e)    => test.fail(e.message())
+                Ok(short) =>
+                    test.case("the 32-byte tag is not the front of the 64-byte one")
+                    test.assert(not str.starts_with(bytes.to_hex(long),
+                                                    bytes.to_hex(short)))
+
+@test
+fn test_a_zero_length_kmac_is_refused_and_kmacxof_is_the_other_function() [io]
+    let empty = bytes.from_str("")
+
+    test.case("an empty output buffer is Sha3EmptyOutput")
+    match sha3kmac.kmac128(sample_key(), sample_data(), empty, bytes.zeros(0))
+        Ok(_)  => test.fail("a zero-length KMAC is a different function, not an empty tag")
+        Err(e) =>
+            test.assert_eq_str(sha3err.code(e), "empty-output")
+            test.assert(sha3err.is_length_fault(e))
+            test.assert(not sha3err.is_order_fault(e))
+
+    test.case("the XOF form takes an empty buffer and answers one")
+    test.assert_eq(bytes.len(sha3kmac.kmac128_xof(sample_key(), sample_data(),
+                                                  empty, bytes.zeros(0))),
+                                                  0)
+
+@test
+fn test_kmacxof_output_is_a_prefix_of_every_longer_one() [io]
+    // right_encode(0) goes in instead of the length, so the bytes do
+    // not depend on how many were asked for.  That is exactly the rule
+    // the non-XOF form breaks on purpose.
+    let empty = bytes.from_str("")
+    let long = bytes.to_hex(sha3kmac.kmac128_xof(sample_key(), sample_data(),
+                                                 empty, bytes.zeros(64)))
+    let short = bytes.to_hex(sha3kmac.kmac128_xof(sample_key(), sample_data(),
+                                                  empty, bytes.zeros(32)))
+
+    test.case("32 bytes of KMACXOF128 are the front of 64")
+    test.assert(str.starts_with(long, short))
+
+    test.case("and KMACXOF is not KMAC at the same length")
+    match sha3kmac.kmac128(sample_key(), sample_data(), empty, bytes.zeros(32))
+        Ok(tag) => test.assert(bytes.to_hex(tag) != short)
+        Err(e)  => test.fail(e.message())
+
+@test
+fn test_the_streaming_kmac_answers_what_the_one_shot_does() [io]
+    let empty = bytes.from_str("")
+    var m = sha3kmac.kmac_new(Sha3Shake128, sample_key(), empty)
+
+    test.case("the key was padded to the rate, which for KMAC128 is 168")
+    test.assert_eq(sha3kmac.kmac_rate_bytes(m), 168)
+    test.assert_eq_str(sha3kmac.KMAC_FUNCTION_NAME, "KMAC")
+
+    m = sha3kmac.kmac_update(m, hex("0001"))
+    m = sha3kmac.kmac_update(m, hex("0203"))
+
+    test.case("two updates are sample 1's four bytes")
+    match sha3kmac.kmac_finish(m, bytes.zeros(32))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "e5780b0d3ea6f7d3a429c5706aa43a00fadbd7d49628839e3187243f456ee14e")
+        Err(e)  => test.fail(e.message())
+
+@test
+fn test_kmac256_pads_the_key_to_the_smaller_rate() [io]
+    let empty = bytes.from_str("")
+    let m = sha3kmac.kmac_new(Sha3Shake256, sample_key(), empty)
+
+    test.case("KMAC256's sponge absorbs 136 bytes per permutation")
+    test.assert_eq(sha3kmac.kmac_rate_bytes(m), 136)
+
+    test.case("KMAC256 answers a tag of the length it was given a buffer for")
+    match sha3kmac.kmac256(sample_key(), sample_data(), empty, bytes.zeros(64))
+        Ok(tag) => test.assert_eq(bytes.len(tag), 64)
+        Err(e)  => test.fail(e.message())
+
+    test.case("and its XOF form fills whatever buffer it is handed")
+    test.assert_eq(bytes.len(sha3kmac.kmac256_xof(sample_key(), sample_data(),
+                                                  empty, bytes.zeros(17))),
+                                                  17)
+
+@test
+fn test_a_cshake_state_can_be_driven_by_hand() [io]
+    // `cshake_new` answers the same `Sha3Xof` the plain SHAKEs use, so
+    // a caller that has to absorb a message in pieces under a
+    // customization string has the ordinary streaming calls.
+    let out = bytes.zeros(32)
+    var c = sha3kmac.cshake_new(Sha3Shake128, bytes.from_str(""),
+                                bytes.from_str("Email Signature"))
+
+    test.case("it starts unsealed and absorbing")
+    test.assert_eq(sha3xof.xof_is_sealed(c), false)
+
+    c = sha3xof.xof_update(c, hex("0001"))
+    c = sha3xof.xof_update(c, hex("0203"))
+    c = sha3xof.xof_squeeze(c, out)
+
+    test.case("and hand-driven it is cSHAKE128 sample 1")
+    test.assert_eq_str(bytes.to_hex(out),
+        "c1c36925b6409a04f1b504fcbca9d82b4017277cb5ed2b2065fc1d3814d5aaf5")

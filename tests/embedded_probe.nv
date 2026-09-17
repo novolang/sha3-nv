@@ -1,0 +1,131 @@
+// tests/embedded_probe.nv — the package's device claim, as a program
+// that either builds for a Cortex-M or does not.
+//
+// The shard audit's `core-embedded` row copies this and the modules
+// its `use` lines reach into a package of its own and runs
+//
+//   novo build --target=nrf52-qemu src/probe.nv
+//
+// which produces a real Cortex-M4 ELF or fails.  The consumer that
+// makes the claim worth having is a bootloader: it has an image in
+// flash, a digest it was provisioned with, and no heap.  Hashing that
+// image is the permutation and the sponge, a byte at a time, over a
+// 200-byte state that lives in this function's own frame.
+//
+// It BUILDS; it does not run.  Every function it calls is a `todo()`
+// today, so a device that executed this would panic on the first line
+// of `main`.  What is being checked is the tier: `--target=nrf52-qemu`
+// stamps `@tier(embedded)` on every function it compiles, so the
+// checker walks the module and refuses a `Str` concatenation, a list
+// literal or an unbounded `while` wherever the implementation later
+// puts one.
+//
+// `sha3hash`, `sha3xof`, `sha3kmac` AND `sha3err` ARE NOT USED HERE,
+// and that is the split rather than a convenience: they speak `Bytes`,
+// `Str` and `Result`, the embedded runtime defines none of them, and
+// one host-only function anywhere in a compilation unit is an
+// undefined symbol at embedded link time whether or not the firmware
+// calls it.
+
+use sha3keccak
+use sha3sponge
+
+// Eight bytes of an image, the way firmware holds a chunk it just read
+// out of flash.
+//
+// The array is a FIELD of a `@value` struct rather than a return type,
+// because `[u8; 8]` is a true inline array only inside one — outside,
+// the annotation still means a list, and a list literal is an implicit
+// heap allocation the tier refuses (SPEC § 14.4).
+@value
+struct ProbeChunk
+    b: [u8; 8]
+
+// `61 62 63 …` — "abc" and five bytes after it, which is the message
+// every SHA-3 known answer starts from.
+fn probe_chunk() -> ProbeChunk
+    ProbeChunk { b: [0x61 as u8, 0x62 as u8, 0x63 as u8, 0x00 as u8,
+                     0x01 as u8, 0x02 as u8, 0x03 as u8, 0x04 as u8] }
+
+fn main() [hw]
+    // The geometry, so a device that sizes a scratch buffer compiles
+    // the same numbers the host does.
+    //
+    // Each step is bound with its type written out because a call into
+    // another module does not have its return type inferred in a
+    // single-file build.  Inside a package built as one unit — which
+    // is what every host suite does — none of these annotations is
+    // needed.
+    let lanes: Int = sha3keccak.SHA3_LANE_COUNT
+    let lane_bits: Int = sha3keccak.SHA3_LANE_BITS
+    let state_bytes: Int = sha3keccak.SHA3_STATE_BYTES
+    let rounds: Int = sha3keccak.SHA3_ROUNDS
+
+    // The permutation, driven directly: a state, one round, and the
+    // whole twenty-four.  This is what a bootloader's hash is made of
+    // and the only arithmetic in it.
+    let zero: Sha3Lanes = sha3keccak.zero_lanes()
+    let rc0: Int = sha3keccak.round_constant(0)
+    let off0: Int = sha3keccak.rho_offset(0)
+    let pi0: Int = sha3keccak.pi_index(0)
+    let rot: Int = sha3keccak.rotl64(1, 1)
+
+    let t: Sha3Lanes = sha3keccak.theta(zero)
+    let rp: Sha3Lanes = sha3keccak.rho_pi(t)
+    let c: Sha3Lanes = sha3keccak.chi(rp)
+    let i0: Sha3Lanes = sha3keccak.iota(c, 0)
+    let one: Sha3Lanes = sha3keccak.keccak_round(zero, 0)
+    let full: Sha3Lanes = sha3keccak.permute(one)
+
+    let l0: Int = sha3keccak.lane(full, 0)
+    let put: Sha3Lanes = sha3keccak.with_lane(full, 0, l0)
+    let sb: Int = sha3keccak.state_byte(put, 0)
+
+    // The sponge: absorb a chunk of the image byte at a time, seal,
+    // and read the digest out with no buffer at all.
+    var s: Sha3Sponge = sha3sponge.sponge(136, sha3sponge.SHA3_PAD_HASH)
+    let chunk = probe_chunk()
+    for i in 0..8
+        let b: u8 = chunk.b[i]
+        s = sha3sponge.absorb_byte(s, b)
+        // A real device would be stepping a progress bar here; the
+        // write is what forces the loop to be compiled.
+        hal.uart.write(".")
+
+    let absorbed: Int = sha3sponge.position(s)
+    let rate: Int = sha3sponge.rate_of(s)
+    let cap: Int = sha3sponge.capacity_of(s)
+    let pad: Int = sha3sponge.pad_of(s)
+
+    s = sha3sponge.seal(s)
+    let sealed: Bool = sha3sponge.is_sealed(s)
+    let inner: Sha3Lanes = sha3sponge.lanes_of(s)
+    let inner0: Int = sha3keccak.lane(inner, 0)
+
+    // Thirty-two bytes of digest, compared against a provisioned one
+    // byte at a time — which is the whole of what a secure boot does.
+    var diff: Int = 0
+    for i in 0..32
+        let d: Int = sha3sponge.squeeze_byte(s)
+        s = sha3sponge.squeeze_next(s)
+        diff = diff | d
+        hal.uart.write("-")
+
+    // Absorbing into a sealed sponge is ignored, which is the rule
+    // this module states and the device relies on.
+    let after: Sha3Sponge = sha3sponge.absorb_byte(s, 0x00 as u8)
+    let after_pos: Int = sha3sponge.position(after)
+
+    let xored: Sha3Lanes = sha3keccak.xor_byte(zero, 0, 0x06 as u8)
+    let xored0: Int = sha3keccak.state_byte(xored, 0)
+
+    if sealed and diff >= 0 and after_pos >= 0
+        hal.uart.write("!")
+
+    let total: Int = lanes + lane_bits + state_bytes + rounds + rc0 + off0
+        + pi0 + rot + l0 + sb + absorbed + rate + cap + pad + inner0
+        + xored0 + sha3keccak.lane(i0, 0)
+    if total > 0
+        hal.uart.write("?")
+
+    hal.uart.write("sha3-nv: one permutation, a rate and a domain byte\n")

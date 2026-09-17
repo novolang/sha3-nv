@@ -1,0 +1,56 @@
+[package]
+name        = "sha3-nv"
+version     = "0.0.1"
+description = "FIPS 202's SHA-3: Keccak-p[1600, 24] as a @value state a device holds in its own frame, the sponge as a rate and one domain-separation byte, SHA3-224/256/384/512 as one state parameterised by a width, SHAKE128 and SHAKE256 with resumable squeezing, and cSHAKE and KMAC from SP 800-185 over the same sponge.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A hash reads no clock, no file and no randomness: a message
+# arrives as bytes the host already holds and a digest is written into
+# a buffer the caller already owns.  Every public function's effect row
+# is `[]`, and not one of them wanted to widen.
+#
+# It carries `tests/embedded_probe.nv`, so the device claim is BUILT —
+# for `sha3keccak` and `sha3sponge`, the half a microcontroller can
+# use: the permutation and the sponge as integer arithmetic over a
+# `@value` state, with no buffer and no allocation.  The three modules
+# that speak `Bytes` stay on the host.
+layer       = "core"
+
+category    = "crypto"
+
+tags = ["sha3", "keccak", "shake", "cshake", "kmac", "fips-202", "sp-800-185", "hash", "xof", "mac", "embedded"]
+repository  = "https://github.com/novolang/sha3-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "One permutation, a rate and a domain byte — and every function SHA-3 has"
+
+[dependencies]
+# NONE, and that is a decision rather than an accident.
+#
+# NOT crypto-nv.  It is the neighbouring hash package and it publishes
+# `digest.ct_eq`, the constant-time comparison a KMAC tag must be
+# checked with.  Depending on it for that one function would put SHA-2,
+# SHA-1, MD5 and HMAC into the dependency footprint of a device that
+# wanted SHA-3 and nothing else.  blake2-nv made the same call for the
+# same reason, and the README says where the comparison lives so a
+# caller can find it.
+#
+# NOT bitstream-nv.  Keccak's state is twenty-five 64-bit lanes and its
+# byte order is one flattening rule (FIPS 202 § B.1), which is index
+# arithmetic rather than a bit reader.
+#
+# NOT base64-nv or hex.  A digest leaves this package as `Bytes`.  How
+# it is printed is the caller's, and `bytes.to_hex` is already in the
+# standard library.

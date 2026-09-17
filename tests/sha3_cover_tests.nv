@@ -1,0 +1,114 @@
+// tests/sha3_cover_tests.nv — the rest of the public surface, one case
+// each.
+//
+// RED ON PURPOSE, like every suite here: each assertion reaches
+// `not implemented: sha3-nv.<module>.<fn>`.
+//
+// The three suites beside this one assert the DESIGN — the known
+// answers, the sponge's two numbers, and the SP 800-185 encodings.
+// This one exists so that no public function ships without a written
+// expectation of what it answers.
+
+use std.test
+use std.bytes
+use sha3hash
+use sha3xof
+use sha3kmac
+
+@test
+fn test_the_width_accessors_agree_with_the_constants() [io]
+    test.case("digest_bytes is the number in the name, in bytes")
+    test.assert_eq(sha3hash.digest_bytes(Sha3Width224), 28)
+    test.assert_eq(sha3hash.digest_bytes(Sha3Width256), 32)
+    test.assert_eq(sha3hash.digest_bytes(Sha3Width384), 48)
+    test.assert_eq(sha3hash.digest_bytes(Sha3Width512), 64)
+
+    test.case("capacity_bits is twice the digest length in bits")
+    test.assert_eq(sha3hash.capacity_bits(Sha3Width224), 448)
+    test.assert_eq(sha3hash.capacity_bits(Sha3Width256), 512)
+    test.assert_eq(sha3hash.capacity_bits(Sha3Width384), 768)
+    test.assert_eq(sha3hash.capacity_bits(Sha3Width512), 1024)
+
+@test
+fn test_a_width_has_the_name_fips_202_gives_it() [io]
+    test.case("width_name is the spelling a protocol writes")
+    test.assert_eq_str(sha3hash.width_name(Sha3Width224), "SHA3-224")
+    test.assert_eq_str(sha3hash.width_name(Sha3Width256), "SHA3-256")
+    test.assert_eq_str(sha3hash.width_name(Sha3Width384), "SHA3-384")
+    test.assert_eq_str(sha3hash.width_name(Sha3Width512), "SHA3-512")
+
+    test.case("width_named reads the four names back")
+    match sha3hash.width_named("SHA3-384")
+        Some(w) => test.assert_eq_str(sha3hash.width_name(w), "SHA3-384")
+        None    => test.fail("SHA3-384 is one of the four")
+
+    test.case("and answers None for a SHAKE, which is not a fixed width")
+    match sha3hash.width_named("SHAKE128")
+        Some(_) => test.fail("a SHAKE has no digest length to give")
+        None    => test.assert(true)
+
+    test.case("and None for anything else")
+    match sha3hash.width_named("sha3-256")
+        Some(_) => test.fail("the four names are as FIPS 202 spells them")
+        None    => test.assert(true)
+
+@test
+fn test_a_state_knows_its_own_digest_length_and_whether_it_is_finished() [io]
+    let st = sha3hash.new(Sha3Width384)
+
+    test.case("digest_len_of is what finish will write")
+    test.assert_eq(sha3hash.digest_len_of(st), 48)
+
+    test.case("a fresh state is not finished")
+    test.assert_eq(sha3hash.is_finished(st), false)
+
+    test.case("a finished state refuses more input rather than hashing it")
+    match sha3hash.finish(st, bytes.zeros(48))
+        Err(e) => test.fail(e.message())
+        Ok(_)  =>
+            match sha3hash.digest_into(Sha3Width384, bytes.from_str("abc"),
+                                       bytes.zeros(47))
+                Ok(_)  => test.fail("47 bytes is not a SHA3-384 digest")
+                Err(e) => test.assert_eq_str(sha3err.code(e), "output-buffer-wrong")
+
+@test
+fn test_the_xof_kinds_name_themselves() [io]
+    test.case("xof_name is the spelling FIPS 202 uses")
+    test.assert_eq_str(sha3xof.xof_name(Sha3Shake128), "SHAKE128")
+    test.assert_eq_str(sha3xof.xof_name(Sha3Shake256), "SHAKE256")
+
+@test
+fn test_sealing_an_xof_by_hand_gives_the_same_bytes_as_squeezing_straight_away() [io]
+    // `xof_squeeze` seals for a caller who did not, so the two routes
+    // are the same value and a caller never has to remember.
+    let a = bytes.zeros(32)
+    let b = bytes.zeros(32)
+
+    var sealed = sha3xof.xof_seal(sha3xof.xof_new(Sha3Shake256))
+    test.case("xof_seal marks the state as squeezing")
+    test.assert_eq(sha3xof.xof_is_sealed(sealed), true)
+    sealed = sha3xof.xof_squeeze(sealed, a)
+
+    var unsealed = sha3xof.xof_new(Sha3Shake256)
+    unsealed = sha3xof.xof_squeeze(unsealed, b)
+
+    test.case("and squeezing without sealing first answers the same bytes")
+    test.assert_eq_str(bytes.to_hex(a), bytes.to_hex(b))
+
+@test
+fn test_the_streaming_kmac_xof_form_matches_its_one_shot() [io]
+    let key = bytes.zeros(32)
+    let empty = bytes.from_str("")
+    let out = bytes.zeros(32)
+
+    var m = sha3kmac.kmac_new(Sha3Shake128, key, empty)
+    m = sha3kmac.kmac_update(m, bytes.from_str("abc"))
+    let streamed = sha3kmac.kmac_finish_xof(m, out)
+
+    test.case("kmac_finish_xof fills the buffer it is handed")
+    test.assert_eq(bytes.len(streamed), 32)
+
+    test.case("and answers what kmac128_xof does in one call")
+    test.assert_eq_str(bytes.to_hex(streamed),
+        bytes.to_hex(sha3kmac.kmac128_xof(key, bytes.from_str("abc"), empty,
+                                          bytes.zeros(32))))

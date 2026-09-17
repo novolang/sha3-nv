@@ -1,0 +1,218 @@
+// tests/sha3_sponge_tests.nv — the permutation, the sponge, and the
+// two numbers that tell every function in this package apart.
+//
+// RED ON PURPOSE, like every suite here: each assertion reaches
+// `not implemented: sha3-nv.<module>.<fn>`.
+//
+// The vectors are FIPS 202's own: the round count and the lane
+// geometry from § 3, the round constants from Appendix B, the rates
+// and capacities from § 6, and the padding bytes from § 6.1 and § 6.2.
+// A test that fails here names the paragraph it disagrees with.
+
+use std.test
+use sha3keccak
+use sha3sponge
+use sha3hash
+use sha3xof
+
+@test
+fn test_the_state_geometry_is_the_standards_own() [io]
+    test.case("twenty-five lanes of 64 bits is 200 bytes")
+    test.assert_eq(sha3keccak.SHA3_LANE_COUNT, 25)
+    test.assert_eq(sha3keccak.SHA3_LANE_BITS, 64)
+    test.assert_eq(sha3keccak.SHA3_STATE_BYTES, 200)
+
+    test.case("Keccak-p[1600, 24] has 24 rounds — 12 + 2l with l = 6")
+    test.assert_eq(sha3keccak.SHA3_ROUNDS, 24)
+
+@test
+fn test_a_sponge_starts_from_nothing() [io]
+    // Unlike SHA-2, whose eight starting words are fractional parts of
+    // square roots, Keccak starts from 1600 zero bits.  The domain
+    // separation happens in the padding instead.
+    let s = sha3keccak.zero_lanes()
+
+    test.case("every lane is zero")
+    test.assert_eq(sha3keccak.lane(s, 0), 0)
+    test.assert_eq(sha3keccak.lane(s, 24), 0)
+
+    test.case("and so is every byte of its little-endian image")
+    test.assert_eq(sha3keccak.state_byte(s, 0), 0)
+    test.assert_eq(sha3keccak.state_byte(s, 199), 0)
+
+    test.case("an index outside the state answers zero rather than trapping")
+    test.assert_eq(sha3keccak.lane(s, 25), 0)
+    test.assert_eq(sha3keccak.state_byte(s, 200), 0)
+
+@test
+fn test_the_first_round_constant_is_one_and_iota_is_the_only_step_that_uses_it() [io]
+    // FIPS 202 Appendix B prints the 24 constants.  The first is 1.
+    test.case("RC[0] is 1")
+    test.assert_eq(sha3keccak.round_constant(0), 1)
+
+    test.case("RC[23] is 0x8000000080008008, which as a signed Int is negative")
+    test.assert_eq(sha3keccak.round_constant(23), -9223372034707259384)
+
+    test.case("a round outside 0..=23 answers 0 rather than trapping")
+    test.assert_eq(sha3keccak.round_constant(24), 0)
+
+    test.case("one round on the zero state is iota alone: lane 0 becomes RC[0]")
+    // theta, rho, pi and chi all map the zero state to itself; only
+    // iota touches it.  This is the cheapest check that the four steps
+    // are wired in the right order.
+    let after = sha3keccak.keccak_round(sha3keccak.zero_lanes(), 0)
+    test.assert_eq(sha3keccak.lane(after, 0), 1)
+
+@test
+fn test_rho_does_not_rotate_lane_zero() [io]
+    // The one entry of the § 3.2.2 table an implementation written
+    // from the diagram gets wrong.
+    test.case("the rho offset of lane 0 is 0")
+    test.assert_eq(sha3keccak.rho_offset(0), 0)
+
+    test.case("pi leaves lane 0 where it is")
+    test.assert_eq(sha3keccak.pi_index(0), 0)
+
+@test
+fn test_the_four_step_mappings_fix_the_zero_state_and_the_permutation_does_not() [io]
+    let z = sha3keccak.zero_lanes()
+
+    test.case("theta of the zero state is the zero state")
+    test.assert_eq(sha3keccak.lane(sha3keccak.theta(z), 7), 0)
+
+    test.case("rho and pi move lanes and change no bits")
+    test.assert_eq(sha3keccak.lane(sha3keccak.rho_pi(z), 7), 0)
+
+    test.case("chi is the only non-linear step and still fixes zero")
+    test.assert_eq(sha3keccak.lane(sha3keccak.chi(z), 7), 0)
+
+    test.case("iota is what breaks the symmetry")
+    test.assert_eq(sha3keccak.lane(sha3keccak.iota(z, 0), 0), 1)
+
+    test.case("and all 24 rounds of the zero state are not the zero state")
+    test.assert(sha3keccak.lane(sha3keccak.permute(z), 0) != 0)
+
+@test
+fn test_a_lane_is_a_bit_pattern_and_rotation_is_cyclic() [io]
+    test.case("rotating 1 left by one bit is 2")
+    test.assert_eq(sha3keccak.rotl64(1, 1), 2)
+
+    test.case("rotating by 0 is the identity")
+    test.assert_eq(sha3keccak.rotl64(12345, 0), 12345)
+
+    test.case("rotating 1 left by 63 sets the top bit, which reads negative")
+    test.assert(sha3keccak.rotl64(1, 63) < 0)
+
+@test
+fn test_absorbing_is_xor_so_the_capacity_keeps_its_value() [io]
+    // Absorbing XORs into the rate rather than replacing it, which is
+    // what lets the capacity bytes stay untouched while the message is
+    // mixed into the rest.
+    let s = sha3keccak.xor_byte(sha3keccak.zero_lanes(), 0, 0x06 as u8)
+
+    test.case("the byte lands where the little-endian layout puts it")
+    test.assert_eq(sha3keccak.state_byte(s, 0), 6)
+
+    test.case("XORing it again clears it")
+    test.assert_eq(sha3keccak.state_byte(sha3keccak.xor_byte(s, 0, 0x06 as u8), 0), 0)
+
+    test.case("with_lane and lane are inverses")
+    test.assert_eq(sha3keccak.lane(sha3keccak.with_lane(sha3keccak.zero_lanes(), 3, 99), 3), 99)
+
+@test
+fn test_a_sponge_is_a_rate_and_a_padding_byte_and_nothing_else() [io]
+    let hash = sha3sponge.sponge(136, sha3sponge.SHA3_PAD_HASH)
+    let xof = sha3sponge.sponge(136, sha3sponge.SHA3_PAD_XOF)
+
+    test.case("SHA3-256 and SHAKE256 have the same rate")
+    test.assert_eq(sha3sponge.rate_of(hash), sha3sponge.rate_of(xof))
+
+    test.case("and differ in one byte of padding")
+    test.assert_eq(sha3sponge.pad_of(hash), 0x06)
+    test.assert_eq(sha3sponge.pad_of(xof), 0x1f)
+    test.assert_eq(sha3sponge.SHA3_PAD_CSHAKE, 0x04)
+
+    test.case("the capacity is 1600 bits minus eight times the rate")
+    test.assert_eq(sha3sponge.capacity_of(hash), 512)
+    test.assert_eq(sha3sponge.capacity_of(sha3sponge.sponge(168, 0x1f)), 256)
+
+@test
+fn test_a_sponge_absorbs_then_seals_then_squeezes_in_that_order() [io]
+    var s = sha3sponge.sponge(136, sha3sponge.SHA3_PAD_HASH)
+
+    test.case("a fresh sponge is absorbing at position 0")
+    test.assert_eq(sha3sponge.position(s), 0)
+    test.assert_eq(sha3sponge.is_sealed(s), false)
+
+    test.case("one absorbed byte moves the position")
+    s = sha3sponge.absorb_byte(s, 0x61 as u8)
+    test.assert_eq(sha3sponge.position(s), 1)
+
+    test.case("sealing pads, permutes, and puts the position back to 0")
+    s = sha3sponge.seal(s)
+    test.assert_eq(sha3sponge.is_sealed(s), true)
+    test.assert_eq(sha3sponge.position(s), 0)
+
+    test.case("sealing twice answers the same sponge")
+    test.assert_eq(sha3sponge.position(sha3sponge.seal(s)), 0)
+
+    test.case("squeezing steps a byte at a time, with no buffer at all")
+    let b = sha3sponge.squeeze_byte(s)
+    test.assert(b >= 0)
+    test.assert_eq(sha3sponge.position(sha3sponge.squeeze_next(s)), 1)
+
+    test.case("a byte absorbed after sealing is ignored, not absorbed")
+    test.assert_eq(sha3sponge.position(sha3sponge.absorb_byte(s, 0x62 as u8)), 0)
+
+@test
+fn test_an_unsealed_sponge_gives_zeros_rather_than_a_plausible_digest() [io]
+    // A caller who forgot to seal gets something obviously wrong
+    // rather than 32 bytes that look like a hash.
+    let fresh = sha3sponge.sponge(136, sha3sponge.SHA3_PAD_HASH)
+    test.case("squeeze_byte on an unsealed sponge is 0")
+    test.assert_eq(sha3sponge.squeeze_byte(fresh), 0)
+
+    test.case("and stepping it changes nothing")
+    test.assert_eq(sha3sponge.position(sha3sponge.squeeze_next(fresh)), 0)
+
+    test.case("the lanes are reachable for a test that bisects a round")
+    test.assert_eq(sha3keccak.lane(sha3sponge.lanes_of(fresh), 0), 0)
+
+@test
+fn test_the_rate_of_each_width_is_two_hundred_minus_twice_the_digest() [io]
+    // FIPS 202's rule that the capacity is twice the security
+    // strength, written as the arithmetic a reader can check.
+    test.case("the four digest lengths")
+    test.assert_eq(sha3hash.SHA3_224_DIGEST_BYTES, 28)
+    test.assert_eq(sha3hash.SHA3_256_DIGEST_BYTES, 32)
+    test.assert_eq(sha3hash.SHA3_384_DIGEST_BYTES, 48)
+    test.assert_eq(sha3hash.SHA3_512_DIGEST_BYTES, 64)
+
+    test.case("the four rates")
+    test.assert_eq(sha3hash.SHA3_224_RATE_BYTES, 144)
+    test.assert_eq(sha3hash.SHA3_256_RATE_BYTES, 136)
+    test.assert_eq(sha3hash.SHA3_384_RATE_BYTES, 104)
+    test.assert_eq(sha3hash.SHA3_512_RATE_BYTES, 72)
+
+    test.case("and each rate is 200 - 2 * digest")
+    test.assert_eq(sha3hash.rate_bytes(Sha3Width224), 200 - 2 * 28)
+    test.assert_eq(sha3hash.rate_bytes(Sha3Width512), 200 - 2 * 64)
+
+    test.case("SHA3-512 is the slowest because its rate is smallest")
+    test.assert(sha3hash.rate_bytes(Sha3Width512) < sha3hash.rate_bytes(Sha3Width224))
+
+@test
+fn test_the_number_in_a_shake_name_is_a_security_level_not_a_length() [io]
+    // The mistake this package refuses to make easy: there is no
+    // SHAKE128_DIGEST_BYTES, because SHAKE128 has no digest length.
+    test.case("SHAKE128's rate is 168 and its security is 128 bits")
+    test.assert_eq(sha3xof.SHAKE128_RATE_BYTES, 168)
+    test.assert_eq(sha3xof.SHAKE128_SECURITY_BITS, 128)
+
+    test.case("SHAKE256's rate is 136 and its security is 256 bits")
+    test.assert_eq(sha3xof.SHAKE256_RATE_BYTES, 136)
+    test.assert_eq(sha3xof.SHAKE256_SECURITY_BITS, 256)
+
+    test.case("64 bytes out of SHAKE128 is still 128 bits of security")
+    test.assert_eq(sha3xof.xof_security_bits(Sha3Shake128), 128)
+    test.assert_eq(sha3xof.xof_rate_bytes(Sha3Shake128), 168)
