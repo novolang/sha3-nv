@@ -1,9 +1,6 @@
 // tests/sha3_sponge_tests.nv — the permutation, the sponge, and the
 // two numbers that tell every function in this package apart.
 //
-// RED ON PURPOSE, like every suite here: each assertion reaches
-// `not implemented: sha3-nv.<module>.<fn>`.
-//
 // The vectors are FIPS 202's own: the round count and the lane
 // geometry from § 3, the round constants from Appendix B, the rates
 // and capacities from § 6, and the padding bytes from § 6.1 and § 6.2.

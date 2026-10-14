@@ -8,12 +8,6 @@ length the caller asks for.
 cSHAKE and KMAC on top of those. This package brings all of them to
 novo-lang.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release.
-
 ## What SHA-3 is
 
 A cryptographic hash turns a message of any length into a short,
@@ -85,7 +79,7 @@ fn main() [io]
 
     // The same digest into a buffer you own, which is how a program
     // that hashes a thousand messages does it.
-    let out = bytes.zeros(32)
+    var out = bytes.zeros(32)
     match sha3hash.digest_into(Sha3Width256, bytes.from_str("abc"), out)
         Ok(d)  => println(bytes.to_hex(d))
         Err(e) => println(e.message())
@@ -96,10 +90,9 @@ fn main() [io]
     // 7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a `not implemented:
-sha3-nv.<module>.<fn>` panic. The tests are the specification the
-implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`. The suites under
+`tests/` are the specification this implementation was fitted to, and
+they are green.
 
 ## What the package contains
 
@@ -180,8 +173,11 @@ output one byte at a time. Nothing is allocated from start to end. See
     2.3.1. The length written is a count of bytes, and the one written
     by `encode_string` is a count of **bits**. Those two are where a
     hand-written KMAC goes wrong.
-12. **Absorbing after squeezing has begun is refused**, as
-    `Sha3AbsorbAfterSqueeze`. A sponge pads once.
+12. **Absorbing after squeezing has begun is ignored**, not refused: a
+    state is a plain value and a plain value has nowhere to put an
+    error. `sha3sponge.is_sealed` and `sha3xof.xof_is_sealed` are the
+    question to ask, and `sha3err.Sha3AbsorbAfterSqueeze` is the code
+    for a caller that reports the mistake itself. A sponge pads once.
 13. **KMAC is not HMAC.** HMAC applies the key twice because SHA-2
     leaks its state at the end of a message. A sponge does not leak its
     state, so KMAC absorbs the key once and costs one pass.
@@ -202,8 +198,9 @@ novo build --target=nrf52-qemu tests/embedded_probe.nv
 
 The probe produces a Cortex-M4 executable that runs the permutation,
 absorbs eight bytes into a sponge a byte at a time, seals it and reads
-thirty-two bytes of output back. It builds and it is not run: every
-function it calls is a `todo()` today.
+thirty-two bytes of output back. It is built and not run: the target is
+an emulator and the probe is a link check, so the arithmetic is
+exercised by the host suites instead.
 
 The consumer for this is a bootloader. It has an image in flash, a
 digest it was provisioned with, and no heap. The 200-byte state lives
@@ -218,9 +215,10 @@ symbol at link time on a device, whether or not the firmware calls it.
 One detail of the low-level interface matters for correctness. A byte
 fed to a sealed sponge is ignored, and a byte squeezed from an unsealed
 one is zero. Neither is an error, because a function over a plain value
-has nowhere to put one. `sha3sponge.is_sealed` is the question to ask,
-and the `Bytes` layer above turns the same mistake into
-`Sha3AbsorbAfterSqueeze`.
+has nowhere to put one. `sha3sponge.is_sealed` is the question to ask.
+The `Bytes` layers behave the same way: `update` answers a state and
+not a `Result`, so `xof_update` on a sealed `Sha3Xof` drops its chunk,
+which is why `sha3xof` publishes `xof_is_sealed`.
 
 ## Timing behaviour
 
@@ -293,6 +291,7 @@ novo test tests/sha3_vectors_tests.nv   # the known answers
 novo test tests/sha3_sponge_tests.nv    # the permutation and the sponge
 novo test tests/sha3_kmac_tests.nv      # the SP 800-185 encodings, cSHAKE, KMAC
 novo test tests/sha3_cover_tests.nv     # every public function is reached
+novo test tests/sha3_edge_tests.nv      # the spec tables, refusals and boundaries
 ```
 
 The suite carries the digests of the empty message and of `"abc"` at
@@ -306,33 +305,8 @@ SHA3-256, that cSHAKE with two empty strings is SHAKE, that a KMAC at
 two lengths gives unrelated tags, and that a byte absorbed after
 sealing is ignored.
 
-The tests compile today and fail at run, each on the `not implemented:
-sha3-nv.<module>.<fn>` panic that is its body. That is the expected
-state of an interface release. They turn green one at a time as bodies
-land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| The four `SHA3_*` geometry constants, the eight width constants, the four SHAKE constants, the three pad bytes, `KMAC_FUNCTION_NAME` | yes (they are constants) |
-| `sha3keccak.Sha3Lanes`, `sha3sponge.Sha3Sponge`, `sha3hash.Sha3State`, `.Sha3Width`, `sha3xof.Sha3Xof`, `.Sha3XofKind`, `sha3kmac.Sha3Kmac`, `sha3err.Sha3Error` | the types are declared |
-| `sha3keccak.zero_lanes`, `.lane`, `.with_lane`, `.state_byte`, `.xor_byte` | no |
-| `sha3keccak.rotl64`, `.round_constant`, `.rho_offset`, `.pi_index` | no |
-| `sha3keccak.theta`, `.rho_pi`, `.chi`, `.iota`, `.keccak_round`, `.permute` | no |
-| `sha3sponge.sponge`, `.absorb_byte`, `.seal`, `.squeeze_byte`, `.squeeze_next` | no |
-| `sha3sponge.rate_of`, `.capacity_of`, `.position`, `.pad_of`, `.is_sealed`, `.lanes_of` | no |
-| `sha3hash.digest_bytes`, `.rate_bytes`, `.capacity_bits`, `.width_name`, `.width_named` | no |
-| `sha3hash.new`, `.update`, `.finish`, `.digest_len_of`, `.is_finished`, `.digest_into` | no |
-| `sha3hash.sha3_224`, `.sha3_256`, `.sha3_384`, `.sha3_512` | no |
-| `sha3xof.xof_rate_bytes`, `.xof_security_bits`, `.xof_name` | no |
-| `sha3xof.xof_new`, `.xof_update`, `.xof_seal`, `.xof_squeeze`, `.xof_is_sealed`, `.xof_squeezed` | no |
-| `sha3xof.shake128_into`, `.shake256_into`, `.shake128`, `.shake256` | no |
-| `sha3kmac.left_encode`, `.right_encode`, `.encode_string`, `.bytepad` | no |
-| `sha3kmac.cshake_new`, `.cshake128_into`, `.cshake256_into` | no |
-| `sha3kmac.kmac_new`, `.kmac_update`, `.kmac_finish`, `.kmac_finish_xof`, `.kmac_rate_bytes` | no |
-| `sha3kmac.kmac128`, `.kmac256`, `.kmac128_xof`, `.kmac256_xof` | no |
-| `sha3err.is_length_fault`, `.is_order_fault`, `.code`, `Sha3Error.message` | no |
+The tests are green, and they are the specification: a body that
+disagrees with one has a defect, not a test to change.
 
 ## Licence
 

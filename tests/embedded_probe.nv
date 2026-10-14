@@ -12,13 +12,11 @@
 // image is the permutation and the sponge, a byte at a time, over a
 // 200-byte state that lives in this function's own frame.
 //
-// It BUILDS; it does not run.  Every function it calls is a `todo()`
-// today, so a device that executed this would panic on the first line
-// of `main`.  What is being checked is the tier: `--target=nrf52-qemu`
-// stamps `@tier(embedded)` on every function it compiles, so the
-// checker walks the module and refuses a `Str` concatenation, a list
-// literal or an unbounded `while` wherever the implementation later
-// puts one.
+// It BUILDS; it does not run.  What is being checked is the tier:
+// `--target=nrf52-qemu` stamps `@tier(embedded)` on every function it
+// compiles, so the checker walks the module and refuses a `Str`
+// concatenation, a list literal or an unbounded `while` the moment one
+// appears in it.
 //
 // `sha3hash`, `sha3xof`, `sha3kmac` AND `sha3err` ARE NOT USED HERE,
 // and that is the split rather than a convenience: they speak `Bytes`,

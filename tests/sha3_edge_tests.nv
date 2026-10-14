@@ -1,0 +1,491 @@
+// tests/sha3_edge_tests.nv — the edges the three oracle suites do
+// not reach: the refusals themselves, the two FIPS 202 tables
+// derived a second time from the standard's own algorithms, and the
+// messages that sit exactly on a rate boundary.
+//
+// WHY THE TABLES ARE DERIVED AGAIN HERE.  `sha3keccak` carries the
+// rho offsets, the pi destinations and the 24 round constants as
+// data.  This suite computes them a second time from the procedures
+// FIPS 202 gives for them — Algorithm 2's walk for rho, and
+// Algorithm 5's linear feedback shift register assembled into
+// constants by Algorithm 6 — and checks every entry.  A table
+// copied from a reference and a table derived from the standard are
+// two different claims, and only the second is the one this package
+// makes.
+//
+// WHERE THE LONGER VECTORS COME FROM.  The suites beside this one
+// pin the short known answers; a 200-byte message and outputs
+// several rate blocks deep are not among them.  The SHA-3 and SHAKE
+// values below are CPython `hashlib`'s, byte for byte.  The
+// SP 800-185 values beyond cSHAKE128 sample 1 are the later samples
+// NIST publishes beside the standard — the 200-byte message at both
+// cSHAKE widths, KMAC128 sample 3, KMAC256 samples 1-3, four of the
+// KMACXOF samples, and customizations long enough that the cSHAKE
+// prefix alone crosses a rate block.  Each was reproduced by a
+// from-spec reference before it was written down, and that reference
+// agrees with every NIST sample in the three suites, with the
+// NIST-derived tests of the `tiny-keccak` crate and with Bouncy
+// Castle's `CSHAKETest`.
+//
+// ON THE REFUSALS.  `Sha3Error` is a published enum of four arms.
+// Two of them are raised by this package — `Sha3OutputBufferWrong`
+// by `sha3hash.finish`, `Sha3EmptyOutput` by `sha3kmac.kmac_finish`.
+// The other two are not: `Sha3AbsorbAfterSqueeze` is named in
+// `sha3hash.update`'s doc, whose signature answers a state and has
+// nowhere to put a refusal, and `Sha3RateNotPositive` belongs to a
+// caller driving `sha3sponge` itself.  All four are published, so
+// all four are built here by hand and asked for their message, their
+// token and their two predicates.
+
+use std.test
+use std.bytes
+use sha3err
+use sha3keccak
+use sha3hash
+use sha3xof
+use sha3kmac
+
+// Private: a hex literal as bytes.  The `??` is for the parse,
+// which cannot fail on a literal written correctly here.
+fn hex(s: Str) -> Bytes
+    bytes.from_hex(s) ?? bytes.zeros(0)
+
+// Private: the 32-byte key and the four data bytes the SP 800-185
+// samples use: 40 41 ... 5f, and 00 01 02 03.
+fn sample_key() -> Bytes
+    hex("404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f")
+
+fn sample_data() -> Bytes
+    hex("00010203")
+
+// Private: the 200-byte message 00 01 02 ... c7 the later samples
+// authenticate.
+fn sample_200() -> Bytes
+    var out = bytes.zeros(200)
+    for i in 0..200
+        bytes.set_u8(out, i, i)
+    out
+
+// Private: rc(t) of FIPS 202 Algorithm 5, with the eight-bit
+// register R held in one Int and R[0] at the top bit.  Prepending
+// the zero makes R nine bits wide, so the old R[7] is read off the
+// bottom bit before anything else and the truncated register is the
+// nine-bit word shifted back down.
+fn lfsr_bit(t: Int) -> Int
+    let m = t % 255
+    if m == 0
+        return 1
+    var r = 0x80
+    for _ in 0..m
+        let drop = r & 1
+        let w = (r | (drop << 8)) ^ (drop << 4) ^ (drop << 3) ^ (drop << 2)
+        r = (w >> 1) & 0xFF
+    (r >> 7) & 1
+
+// Private: the round constant of round `i`, FIPS 202 Algorithm 6:
+// bit 2^j - 1 of it carries rc(7i + j), for j in 0 ..= 6.  Bit 63
+// is what makes thirteen of the twenty-four read negative.
+fn lfsr_constant(i: Int) -> Int
+    var rc = 0
+    for j in 0..7
+        if lfsr_bit(j + 7 * i) == 1
+            rc = rc | (1 << ((1 << j) - 1))
+    rc
+
+@test
+fn test_every_refusal_renders_the_numbers_it_carries() [io]
+    test.case("a short buffer gets the pinned sentence, both numbers in it")
+    test.assert_eq_str(Sha3OutputBufferWrong(want: 32, got: 16).message(),
+        "sha3: the output buffer is 16 bytes and SHA3-256 writes 32")
+
+    test.case("each width names itself, so the report says which one")
+    test.assert_eq_str(Sha3OutputBufferWrong(want: 28, got: 0).message(),
+        "sha3: the output buffer is 0 bytes and SHA3-224 writes 28")
+    test.assert_eq_str(Sha3OutputBufferWrong(want: 48, got: 47).message(),
+        "sha3: the output buffer is 47 bytes and SHA3-384 writes 48")
+    test.assert_eq_str(Sha3OutputBufferWrong(want: 64, got: 65).message(),
+        "sha3: the output buffer is 65 bytes and SHA3-512 writes 64")
+
+    test.case("a length FIPS 202 does not define gets a phrase, not a name")
+    test.assert_eq_str(Sha3OutputBufferWrong(want: 33, got: 16).message(),
+        "sha3: the output buffer is 16 bytes and the digest writes 33")
+
+    test.case("the two refusals with no buffer in them, and the rate one")
+    test.assert_eq_str(Sha3EmptyOutput.message(),
+        "sha3: an output of zero bytes was asked for where the construction forbids it")
+    test.assert_eq_str(Sha3AbsorbAfterSqueeze.message(),
+        "sha3: more input was fed to a state that has already produced output")
+    test.assert_eq_str(Sha3RateNotPositive(rate: 0).message(),
+        "sha3: a sponge was asked for with a rate of 0 bytes, and a rate must be positive")
+    test.assert_eq_str(Sha3RateNotPositive(rate: -8).message(),
+        "sha3: a sponge was asked for with a rate of -8 bytes, and a rate must be positive")
+
+@test
+fn test_the_codes_and_the_two_predicates_partition_the_four_refusals() [io]
+    test.case("output-buffer-wrong is a length fault and not an order one")
+    test.assert_eq_str(sha3err.code(Sha3OutputBufferWrong(want: 32, got: 16)),
+                       "output-buffer-wrong")
+    test.assert(sha3err.is_length_fault(Sha3OutputBufferWrong(want: 32, got: 16)))
+    test.assert(not sha3err.is_order_fault(Sha3OutputBufferWrong(want: 32, got: 16)))
+
+    test.case("empty-output is a length fault and not an order one")
+    test.assert_eq_str(sha3err.code(Sha3EmptyOutput), "empty-output")
+    test.assert(sha3err.is_length_fault(Sha3EmptyOutput))
+    test.assert(not sha3err.is_order_fault(Sha3EmptyOutput))
+
+    test.case("absorb-after-squeeze is the only order fault")
+    test.assert_eq_str(sha3err.code(Sha3AbsorbAfterSqueeze), "absorb-after-squeeze")
+    test.assert(sha3err.is_order_fault(Sha3AbsorbAfterSqueeze))
+    test.assert(not sha3err.is_length_fault(Sha3AbsorbAfterSqueeze))
+
+    test.case("rate-not-positive is a length fault and not an order one")
+    test.assert_eq_str(sha3err.code(Sha3RateNotPositive(rate: 0)), "rate-not-positive")
+    test.assert(sha3err.is_length_fault(Sha3RateNotPositive(rate: 0)))
+    test.assert(not sha3err.is_order_fault(Sha3RateNotPositive(rate: 0)))
+
+    test.case("no refusal is both, and none is neither")
+    test.assert(not (sha3err.is_length_fault(Sha3EmptyOutput)
+                     and sha3err.is_order_fault(Sha3EmptyOutput)))
+    test.assert(sha3err.is_length_fault(Sha3EmptyOutput)
+                 or sha3err.is_order_fault(Sha3EmptyOutput))
+
+@test
+fn test_rho_is_derived_by_algorithm_two() [io]
+    // Algorithm 2 walks the lanes: the current lane gets the
+    // offset ((t + 1)(t + 2) / 2) mod 64, and the walk moves from
+    // (x, y) to (y, (2x + 3y) mod 5).  Its twenty-four steps land
+    // on every lane but (0, 0), which is the one that never
+    // rotates.
+    test.case("all twenty-four moving lanes get the standard's offsets")
+    var x = 1
+    var y = 0
+    for t in 0..24
+        test.assert_eq(sha3keccak.rho_offset(x + 5 * y),
+                       (t + 1) * (t + 2) / 2 % 64)
+        let next = (2 * x + 3 * y) % 5
+        x = y
+        y = next
+
+    test.case("lane 0, which the walk never reaches, is not rotated")
+    test.assert_eq(sha3keccak.rho_offset(0), 0)
+
+    test.case("an index outside the table answers 0")
+    test.assert_eq(sha3keccak.rho_offset(25), 0)
+
+@test
+fn test_pi_is_the_permutation_of_section_3_2_3() [io]
+    test.case("every lane has one destination and every lane is one")
+    var arrivals = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    for s in 0..25
+        let d = sha3keccak.pi_index(s)
+        test.assert(d >= 0 and d < 25)
+        arrivals[d] = arrivals[d] + 1
+    for d in 0..25
+        test.assert_eq(arrivals[d], 1)
+
+    test.case("and each destination comes from the lane the standard names")
+    // § 3.2.3 writes pi as A'[x, y] = A[(x + 3y) mod 5, x], read
+    // destination by destination.
+    for d in 0..25
+        let x = d % 5
+        let y = d / 5
+        test.assert_eq(sha3keccak.pi_index((x + 3 * y) % 5 + 5 * x), d)
+
+@test
+fn test_the_round_constants_come_out_of_algorithms_five_and_six() [io]
+    test.case("all twenty-four, from the standard's shift register")
+    for i in 0..24
+        test.assert_eq(sha3keccak.round_constant(i), lfsr_constant(i))
+
+    test.case("thirteen of the twenty-four have their top bit set")
+    var negatives = 0
+    for i in 0..24
+        if sha3keccak.round_constant(i) < 0
+            negatives = negatives + 1
+    test.assert_eq(negatives, 13)
+
+    test.case("the first and the last, as the implementation writes them")
+    test.assert_eq(sha3keccak.round_constant(0), 1)
+    test.assert_eq(sha3keccak.round_constant(23), -9223372034707259384)
+
+@test
+fn test_the_bit_walkers_and_the_index_guards_stay_defined() [io]
+    test.case("a rotation by a whole word is the identity")
+    test.assert_eq(sha3keccak.rotl64(1, 64), 1)
+    test.assert_eq(sha3keccak.rotl64(1, 127), -9223372036854775808)
+
+    test.case("an index outside the state answers 0 or the state unchanged")
+    let z = sha3keccak.zero_lanes()
+    test.assert_eq(sha3keccak.lane(z, -1), 0)
+    test.assert_eq(sha3keccak.state_byte(z, -1), 0)
+    test.assert_eq(sha3keccak.state_byte(z, 200), 0)
+    test.assert_eq(sha3keccak.lane(sha3keccak.with_lane(z, -1, 9), 0), 0)
+    test.assert_eq(sha3keccak.lane(
+        sha3keccak.with_lane(sha3keccak.with_lane(z, 0, 7), 25, 9), 0),
+        7)
+    test.assert_eq(sha3keccak.state_byte(sha3keccak.xor_byte(z, -1, 0x06 as u8), 0), 0)
+    test.assert_eq(sha3keccak.state_byte(sha3keccak.xor_byte(z, 200, 0x06 as u8), 0), 0)
+
+@test
+fn test_all_four_names_read_back_to_their_width() [io]
+    test.case("the four spellings of FIPS 202 § 6.1")
+    match sha3hash.width_named("SHA3-224")
+        Some(w) => test.assert_eq(sha3hash.digest_bytes(w), 28)
+        None    => test.fail("SHA3-224 is one of the four")
+    match sha3hash.width_named("SHA3-256")
+        Some(w) => test.assert_eq(sha3hash.digest_bytes(w), 32)
+        None    => test.fail("SHA3-256 is one of the four")
+    match sha3hash.width_named("SHA3-512")
+        Some(w) => test.assert_eq(sha3hash.digest_bytes(w), 64)
+        None    => test.fail("SHA3-512 is one of the four")
+
+@test
+fn test_the_shake_geometry_accessors_answer_both_kinds() [io]
+    // FIPS 202 § 6.2: the number in the name is a security strength,
+    // and the rate is 200 bytes minus twice it.
+    test.case("the two rates are 168 and 136")
+    test.assert_eq(sha3xof.xof_rate_bytes(Sha3Shake128), 168)
+    test.assert_eq(sha3xof.xof_rate_bytes(Sha3Shake256), 136)
+
+    test.case("the two strengths are the numbers in the names")
+    test.assert_eq(sha3xof.xof_security_bits(Sha3Shake128), 128)
+    test.assert_eq(sha3xof.xof_security_bits(Sha3Shake256), 256)
+
+    test.case("and each kind names itself as FIPS 202 spells it")
+    test.assert_eq_str(sha3xof.xof_name(Sha3Shake128), "SHAKE128")
+    test.assert_eq_str(sha3xof.xof_name(Sha3Shake256), "SHAKE256")
+
+@test
+fn test_the_encoding_helpers_carry_multi_byte_lengths() [io]
+    test.case("left_encode writes the byte count first, big-endian")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(65535)), "02ffff")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.left_encode(65536)), "03010000")
+
+    test.case("right_encode writes the same digits with the count last")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.right_encode(65535)), "ffff02")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.right_encode(65536)), "01000003")
+
+    test.case("a negative length is the encoding of 0 in both")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.right_encode(-5)), "0001")
+
+    test.case("bytepad adds nothing when the input already fits the width")
+    // left_encode(168) is two bytes, so 166 bytes of input fill the
+    // 168 exactly and the tail is the input's own, not zeros.
+    let fitted = sha3kmac.bytepad(hex(str.repeat("aa", 166)), 168)
+    test.assert_eq(bytes.len(fitted), 168)
+    test.assert_eq_str(bytes.to_hex(fitted),
+                       bytes.to_hex(sha3kmac.left_encode(168)) + str.repeat("aa", 166))
+
+    test.case("and a width of zero or less answers the input unchanged")
+    test.assert_eq(bytes.len(sha3kmac.bytepad(hex("aabb"), -168)), 2)
+
+@test
+fn test_the_messages_that_sit_exactly_on_a_rate_boundary() [io]
+    // SHA3-256 absorbs 136 bytes per permutation and SHA3-512
+    // absorbs 72.  These six messages put the padding at the last
+    // byte of a block, at the first byte of the next one, and one
+    // byte past it.
+    test.case("SHA3-256 of 135, 136 and 137 bytes of the letter a")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_256(bytes.from_str(str.repeat("a", 135)))),
+        "8094bb53c44cfb1e67b7c30447f9a1c33696d2463ecc1d9c92538913"
+        + "392843c9")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_256(bytes.from_str(str.repeat("a", 136)))),
+        "3fc5559f14db8e453a0a3091edbd2bc25e11528d81c66fa570a4efdc"
+        + "c2695ee1")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_256(bytes.from_str(str.repeat("a", 137)))),
+        "f8d6846cedd2ccfadf15c5879ef95af724d799eed7391fb1c91f9534"
+        + "4e738614")
+
+    test.case("SHA3-512 of 71, 72 and 73 bytes of the letter a")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_512(bytes.from_str(str.repeat("a", 71)))),
+        "070faf98d2a8fddf8ed886408744dc06456096c2e045f26f3c7b0105"
+        + "30e6bbb3db535a54d636856f4e0e1e982461cb9a7e8e57ff8895cff1"
+        + "619af9f0e486e28c")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_512(bytes.from_str(str.repeat("a", 72)))),
+        "a8ae722a78e10cbbc413886c02eb5b369a03f6560084aff566bd597b"
+        + "b7ad8c1ccd86e81296852359bf2faddb5153c0a7445722987875e742"
+        + "87adac21adebe952")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_512(bytes.from_str(str.repeat("a", 73)))),
+        "23e6a8815f8201dbbf6a5463be8dcadb1acea9df5f8998954e59ac95"
+        + "65cf6d29b17aa27a5e8b0fc06343db6122d6e544d27583ddc78504d0"
+        + "8203217e7e65b6bd")
+
+@test
+fn test_two_hundred_bytes_of_0xa3_at_every_width() [io]
+    // A message longer than every rate FIPS 202 defines, with the
+    // digests written out rather than only their lengths.
+    let long = hex(str.repeat("a3", 200))
+    test.case("the four fixed widths")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_224(long)),
+        "9376816aba503f72f96ce7eb65ac095deee3be4bf9bbc2a1cb7e11e0")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_256(long)),
+        "79f38adec5c20307a98ef76e8324afbfd46cfd81b22e3973c65fa1bd"
+        + "9de31787")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_384(long)),
+        "1881de2ca7e41ef95dc4732b8f5f002b189cc1e42b74168ed1732649"
+        + "ce1dbcdd76197a31fd55ee989f2d7050dd473e8f")
+    test.assert_eq_str(bytes.to_hex(sha3hash.sha3_512(long)),
+        "e76dfad22084a8b1467fcf2ffa58361bec7628edf5f3fdc0e4805dc4"
+        + "8caeeca81b7c13c30adf52a3659584739a2df46be589c51ca1a4a841"
+        + "6df6545a1ce8ba00")
+    test.case("and the two SHAKEs, sixty-four bytes each")
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake128(long, 64)),
+        "131ab8d2b594946b9c81333f9bb6e0ce75c3b93104fa3469d3917457"
+        + "385da037cf232ef7164a6d1eb448c8908186ad852d3f85a5cf28da1a"
+        + "b6fe343817197846")
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake256(long, 64)),
+        "cd8a920ed141aa0407a22d59288652e9d9f1a7ee0c1e7c1ca699424d"
+        + "a84a904d2d700caae7396ece96604440577da4f3aa22aeb8857f961c"
+        + "4cd8e06f0ae6610b")
+
+@test
+fn test_shake_squeezes_past_the_end_of_a_rate_block() [io]
+    // SHAKE128 produces 168 bytes per permutation, so 168 is the
+    // exact block and 169 is one byte into the next one; SHAKE256
+    // produces 136.
+    test.case("SHAKE128 of the empty message, exactly one rate block")
+    let empty = bytes.from_str("")
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake128(empty, 168)),
+        "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eac"
+        + "fa66ef263cb1eea988004b93103cfb0aeefd2a686e01fa4a58e8a363"
+        + "9ca8a1e3f9ae57e235b8cc873c23dc62b8d260169afa2f75ab916a58"
+        + "d974918835d25e6a435085b2badfd6dfaac359a5efbb7bcc4b59d538"
+        + "df9a04302e10c8bc1cbf1a0b3a5120ea17cda7cfad765f5623474d36"
+        + "8ccca8af0007cd9f5e4c849f167a580b14aabdefaee7eef47cb0fca9")
+    test.case("and the 169th byte is the next one out, 0x76")
+    let short = bytes.to_hex(sha3xof.shake128(empty, 168))
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake128(empty, 169)), short + "76")
+    test.case("SHAKE256 of the three bytes abc, 137 out: one past its rate")
+    test.assert_eq_str(bytes.to_hex(sha3xof.shake256(bytes.from_str("abc"), 137)),
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37"
+        + "e78b5739d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4f"
+        + "eb06bd8801e751e41385141204f329979fd3047a13c5657724ada64d"
+        + "2470157b3cdc288620944d78dbcddbd912993f0913f164fb2ce95131"
+        + "a2d09a3e6d51cbfc622720d7a75c6334e8a2d7ec71a7cc29cf")
+    test.case("and an output length of zero is empty, not an error")
+    test.assert_eq(bytes.len(sha3xof.shake128(empty, 0)), 0)
+
+@test
+fn test_a_cshake_prefix_pads_across_a_rate_block() [io]
+    // The cSHAKE prefix is bytepad(encode_string(N) ||
+    // encode_string(S), rate).  Four of these values have a prefix
+    // that is longer than one rate block on its own.
+    let empty = bytes.from_str("")
+    test.case("cSHAKE128 sample 2: the long message under the Email Signature customization")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.cshake128_into(sample_200(), empty,
+        bytes.from_str("Email Signature"), bytes.zeros(32))),
+        "c5221d50e4f822d96a2e8881a961420f294b7b24fe3d2094baed2c65"
+        + "24cc166b")
+    test.case("cSHAKE256 sample 2: the same message at 256")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.cshake256_into(sample_200(), empty,
+        bytes.from_str("Email Signature"), bytes.zeros(64))),
+        "07dc27b11e51fbac75bc7b3c1d983e8b4b85fb1defaf218912ac8643"
+        + "0273091727f42b17ed1df63e8ec118f04b23633c1dfb1574c8fb55cb"
+        + "45da8e25afb092bb")
+    test.case("cSHAKE256 sample 1: four bytes under the Email Signature customization")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.cshake256_into(sample_data(), empty,
+        bytes.from_str("Email Signature"), bytes.zeros(64))),
+        "d008828e2b80ac9d2218ffee1d070c48b8e4c87bff32c9699d5b6896"
+        + "eee0edd164020e2be0560858d9c00c037e34a96937c561a74c412bb4"
+        + "c746469527281c8c")
+    test.case("a 265-byte customization at 256 and a 329-byte one at 128")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.cshake256_into(empty, empty, bytes.zeros(265), bytes.zeros(20))),
+        "6e393540387004f087c4180db008acf6825190cf")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.cshake128_into(empty, empty, bytes.zeros(329), bytes.zeros(20))),
+        "309bd7c285fcf8b839c9686b2cc00bd578947bee")
+    test.case("and a 29-byte function name against 300 bytes of customization")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.cshake128_into(empty, bytes.zeros(29), bytes.zeros(300), bytes.zeros(20))),
+        "ff6aafd83b8d22fc3e2e9b9948b581967ed9c5e7")
+
+@test
+fn test_the_kmac_samples_beyond_the_first() [io]
+    let empty = bytes.from_str("")
+    let tagged = bytes.from_str("My Tagged Application")
+    test.case("KMAC128 sample 3: the long message under the tagged application")
+    match sha3kmac.kmac128(sample_key(), sample_200(), tagged, bytes.zeros(32))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "1f5b4e6cca02209e0dcb5ca635b89a15e271ecc760071dfd805faa38"
+            + "f9729230")
+        Err(e)  => test.fail(e.message())
+
+    test.case("KMAC256 sample 1: the tagged application, sixty-four bytes")
+    match sha3kmac.kmac256(sample_key(), sample_data(), tagged, bytes.zeros(64))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "20c570c31346f703c9ac36c61c03cb64c3970d0cfc787e9b79599d27"
+            + "3a68d2f7f69d4cc3de9d104a351689f27cf6f5951f0103f33f4f2487"
+            + "1024d9c27773a8dd")
+        Err(e)  => test.fail(e.message())
+
+    test.case("KMAC256 sample 2: the long message and no customization")
+    match sha3kmac.kmac256(sample_key(), sample_200(), empty, bytes.zeros(64))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "75358cf39e41494e949707927cee0af20a3ff553904c86b08f21cc41"
+            + "4bcfd691589d27cf5e15369cbbff8b9a4c2eb17800855d0235ff635d"
+            + "a82533ec6b759b69")
+        Err(e)  => test.fail(e.message())
+
+    test.case("KMAC256 sample 3: both at once")
+    match sha3kmac.kmac256(sample_key(), sample_200(), tagged, bytes.zeros(64))
+        Ok(tag) => test.assert_eq_str(bytes.to_hex(tag),
+            "b58618f71f92e1d56c1b8c55ddd7cd188b97b4ca4d99831eb2699a83"
+            + "7da2e4d970fbacfde50033aea585f1a2708510c32d07880801bd1828"
+            + "98fe476876fc8965")
+        Err(e)  => test.fail(e.message())
+
+@test
+fn test_the_kmac_xof_samples_and_a_zero_length_squeeze() [io]
+    let empty = bytes.from_str("")
+    let tagged = bytes.from_str("My Tagged Application")
+    test.case("KMACXOF128 sample 1: no customization, thirty-two bytes out")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.kmac128_xof(sample_key(), sample_data(),
+        empty, bytes.zeros(32))),
+        "cd83740bbd92ccc8cf032b1481a0f4460e7ca9dd12b08a0c4031178b"
+        + "acd6ec35")
+    test.case("KMACXOF128 sample 2: the tagged application")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.kmac128_xof(sample_key(), sample_data(),
+        tagged, bytes.zeros(32))),
+        "31a44527b4ed9f5c6101d11de6d26f0620aa5c341def41299657fe9d"
+        + "f1a3b16c")
+    test.case("KMACXOF128 sample 3: the two-hundred-byte message")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.kmac128_xof(sample_key(), sample_200(),
+        tagged, bytes.zeros(32))),
+        "47026c7cd793084aa0283c253ef658490c0db61438b8326fe9bddf28"
+        + "1b83ae0f")
+    test.case("KMACXOF256 sample 1: the tagged application, sixty-four bytes")
+    test.assert_eq_str(bytes.to_hex(sha3kmac.kmac256_xof(sample_key(), sample_data(),
+        tagged, bytes.zeros(64))),
+        "1755133f1534752aad0748f2c706fb5c784512cab835cd15676b16c0"
+        + "c6647fa96faa7af634a0bf8ff6df39374fa00fad9a39e322a7c92065"
+        + "a64eb1fb0801eb2b")
+
+    test.case("a zero-length squeeze is right_encode(0), not an empty-output refusal")
+    var m = sha3kmac.kmac_new(Sha3Shake128, sample_key(), empty)
+    m = sha3kmac.kmac_update(m, sample_data())
+    test.assert_eq(bytes.len(sha3kmac.kmac_finish_xof(m, bytes.zeros(0))), 0)
+
+    test.case("and the streaming XOF form answers sample 1")
+    var n = sha3kmac.kmac_new(Sha3Shake128, sample_key(), empty)
+    n = sha3kmac.kmac_update(n, sample_data())
+    test.assert_eq_str(bytes.to_hex(sha3kmac.kmac_finish_xof(n, bytes.zeros(32))),
+        "cd83740bbd92ccc8cf032b1481a0f4460e7ca9dd12b08a0c4031178b"
+        + "acd6ec35")
+
+@test
+fn test_a_cshake_state_counts_the_bytes_it_gives_out() [io]
+    // `xof_squeezed` counts in the `Sha3Xof` wrapper, which the
+    // cSHAKE path builds too, so the count survives a cSHAKE.
+    var first = bytes.zeros(16)
+    var second = bytes.zeros(16)
+    var c = sha3kmac.cshake_new(Sha3Shake128, hex(""), bytes.from_str("Email Signature"))
+    test.assert_eq(sha3xof.xof_squeezed(c), 0)
+
+    c = sha3xof.xof_update(c, sample_data())
+    c = sha3xof.xof_squeeze(c, first)
+    test.assert_eq(sha3xof.xof_squeezed(c), 16)
+    c = sha3xof.xof_squeeze(c, second)
+
+    test.case("two squeezes of sixteen are cSHAKE128 sample 1, thirty-two bytes")
+    test.assert_eq(sha3xof.xof_squeezed(c), 32)
+    test.assert_eq_str(bytes.to_hex(first) + bytes.to_hex(second),
+        "c1c36925b6409a04f1b504fcbca9d82b4017277cb5ed2b2065fc1d3814d5aaf5")

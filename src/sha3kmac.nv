@@ -39,11 +39,57 @@
 // the buffer it is handed, at the one moment it can still be encoded.
 
 use std.bytes
+use sha3err
+use sha3sponge
 use sha3xof
 
 // The function name SP 800-185 § 4.3 reserves for KMAC, as it is
 // spelled into every KMAC computation: `"KMAC"`.
 pub const KMAC_FUNCTION_NAME = "KMAC"
+
+// Private: the number of bytes `v` needs, written big-endian, for `v`
+// in `0 ..= 2^63 - 1`.
+//
+// One byte for anything below 256 and eight for a value that fills the
+// top byte, which is every length an encoding here can be handed.  A
+// negative `v` never reaches it: both encoders below turn one into 0
+// first, because a length is never negative.
+@tier(app)
+fn digit_bytes(v: Int) -> Int
+    var k = 1
+    for i in 1..8
+        if (v >> (8 * i)) > 0
+            k = i + 1
+    k
+
+// Private: those bytes of `v` into `out` at `at`, most significant
+// first, for a `v` that `digit_bytes` has already sized.
+@tier(app)
+fn put_digits(var out: Bytes, at: Int, k: Int, v: Int)
+    for j in 0..k
+        bytes.set_u8(out, at + j, (v >> (8 * (k - 1 - j))) & 0xFF)
+
+// Private: a SHAKE-style sponge of the given kind, with `SHA3_PAD_CSHAKE`
+// as its domain byte and `block` already absorbed.
+//
+// Used for both cSHAKE's prefix and KMAC's key block.  Both are whole
+// multiples of the rate, so the message that follows starts at
+// position 0 of the rate — which is the whole point of `bytepad`.
+@tier(app)
+fn cshake_sponge(k: Sha3XofKind, block: Bytes) -> Sha3Xof
+    var s = sha3sponge.sponge(sha3xof.xof_rate_bytes(k), sha3sponge.SHA3_PAD_CSHAKE)
+    for i in 0..bytes.len(block)
+        s = sha3sponge.absorb_byte(s, bytes.byte_at(block, i) ?? 0)
+    Sha3Xof { sponge: s, squeezed: 0 }
+
+// Private: the two encodings joined, which is what cSHAKE's prefix
+// `bytepad`s.
+@tier(app)
+fn joined(a: Bytes, b: Bytes) -> Bytes
+    var out = bytes.zeros(bytes.len(a) + bytes.len(b))
+    bytes.copy_into(out, 0, a, 0, bytes.len(a))
+    bytes.copy_into(out, bytes.len(a), b, 0, bytes.len(b))
+    out
 
 // A KMAC in progress: a cSHAKE that has already absorbed the padded
 // key block.
@@ -86,8 +132,16 @@ struct Sha3Kmac
 //     println(bytes.to_hex(sha3kmac.left_encode(0)))     // 0100
 //     println(bytes.to_hex(sha3kmac.left_encode(256)))   // 020100
 // ```
-pub fn left_encode(n: Int) -> Bytes []
-    todo("sha3-nv.sha3kmac.left_encode")
+pub @tier(app)
+fn left_encode(n: Int) -> Bytes []
+    var v = n
+    if v < 0
+        v = 0
+    let k = digit_bytes(v)
+    var out = bytes.zeros(k + 1)
+    bytes.set_u8(out, 0, k)
+    put_digits(out, 1, k, v)
+    out
 
 // `right_encode(n)`: the number `n`, with its own byte count AFTER.
 //
@@ -104,8 +158,16 @@ pub fn left_encode(n: Int) -> Bytes []
 //     println(bytes.to_hex(sha3kmac.right_encode(0)))     // 0001
 //     println(bytes.to_hex(sha3kmac.right_encode(256)))   // 010002
 // ```
-pub fn right_encode(n: Int) -> Bytes []
-    todo("sha3-nv.sha3kmac.right_encode")
+pub @tier(app)
+fn right_encode(n: Int) -> Bytes []
+    var v = n
+    if v < 0
+        v = 0
+    let k = digit_bytes(v)
+    var out = bytes.zeros(k + 1)
+    put_digits(out, 0, k, v)
+    bytes.set_u8(out, k, k)
+    out
 
 // `encode_string(s)`: `left_encode` of the length in BITS, then the
 // bytes.
@@ -122,8 +184,9 @@ pub fn right_encode(n: Int) -> Bytes []
 // fn main() [io]
 //     println(bytes.to_hex(sha3kmac.encode_string(bytes.from_str(""))))   // 0100
 // ```
-pub fn encode_string(s: Bytes) -> Bytes []
-    todo("sha3-nv.sha3kmac.encode_string")
+pub @tier(app)
+fn encode_string(s: Bytes) -> Bytes []
+    joined(left_encode(8 * bytes.len(s)), s)
 
 // `bytepad(x, w)`: `left_encode(w)`, then `x`, then zeros to a
 // multiple of `w`.
@@ -141,8 +204,25 @@ pub fn encode_string(s: Bytes) -> Bytes []
 //     let p = sha3kmac.bytepad(sha3kmac.encode_string(bytes.from_str("")), 168)
 //     println("${bytes.len(p)}")   // 168
 // ```
-pub fn bytepad(x: Bytes, w: Int) -> Bytes []
-    todo("sha3-nv.sha3kmac.bytepad")
+pub @tier(app)
+fn bytepad(x: Bytes, w: Int) -> Bytes []
+    // A `w` of zero or less would divide by zero padding, and SP
+    // 800-185 has no such call; the answer is the input unchanged.  It
+    // is answered as a COPY because a plain parameter, which `x` is,
+    // may not be handed back as the caller's own writable buffer
+    // (E2038 — `a-frozen-into-signature-cannot-fill-its-buffer` is the
+    // filing for the family of rules).
+    if w <= 0
+        return bytes.clone(x)
+    let head = left_encode(w)
+    let used = bytes.len(head) + bytes.len(x)
+    var total = used
+    if used % w != 0
+        total = used + (w - used % w)
+    var out = bytes.zeros(total)
+    bytes.copy_into(out, 0, head, 0, bytes.len(head))
+    bytes.copy_into(out, bytes.len(head), x, 0, bytes.len(x))
+    out
 
 // A cSHAKE, ready to absorb the message.
 //
@@ -161,8 +241,13 @@ pub fn bytepad(x: Bytes, w: Int) -> Bytes []
 //                                 bytes.from_str("Email Signature"))
 //     println("${sha3xof.xof_is_sealed(c)}")   // false
 // ```
-pub fn cshake_new(k: Sha3XofKind, function_name: Bytes, customization: Bytes) -> Sha3Xof []
-    todo("sha3-nv.sha3kmac.cshake_new")
+pub @tier(app)
+fn cshake_new(k: Sha3XofKind, function_name: Bytes, customization: Bytes) -> Sha3Xof []
+    if bytes.len(function_name) == 0 and bytes.len(customization) == 0
+        return sha3xof.xof_new(k)
+    cshake_sponge(k, bytepad(joined(encode_string(function_name),
+                                     encode_string(customization)),
+                             sha3xof.xof_rate_bytes(k)))
 
 // cSHAKE128 in one call, into a buffer the caller owns.
 //
@@ -178,9 +263,13 @@ pub fn cshake_new(k: Sha3XofKind, function_name: Bytes, customization: Bytes) ->
 //     println(bytes.to_hex(out))
 //     // c1c36925b6409a04f1b504fcbca9d82b4017277cb5ed2b2065fc1d3814d5aaf5
 // ```
-pub fn cshake128_into(data: Bytes, function_name: Bytes, customization: Bytes,
-                      out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3kmac.cshake128_into")
+pub @tier(app)
+fn cshake128_into(data: Bytes, function_name: Bytes, customization: Bytes,
+                  var out: Bytes) -> Bytes []
+    sha3xof.xof_squeeze(sha3xof.xof_update(
+        cshake_new(Sha3Shake128, function_name, customization), data),
+        out)
+    out
 
 // cSHAKE256 in one call, into a buffer the caller owns.
 //
@@ -195,9 +284,13 @@ pub fn cshake128_into(data: Bytes, function_name: Bytes, customization: Bytes,
 //                                       bytes.zeros(64))
 //     println("${bytes.len(out)}")   // 64
 // ```
-pub fn cshake256_into(data: Bytes, function_name: Bytes, customization: Bytes,
-                      out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3kmac.cshake256_into")
+pub @tier(app)
+fn cshake256_into(data: Bytes, function_name: Bytes, customization: Bytes,
+                  var out: Bytes) -> Bytes []
+    sha3xof.xof_squeeze(sha3xof.xof_update(
+        cshake_new(Sha3Shake256, function_name, customization), data),
+        out)
+    out
 
 // A KMAC, with the key already absorbed.
 //
@@ -215,8 +308,14 @@ pub fn cshake256_into(data: Bytes, function_name: Bytes, customization: Bytes,
 //     let m = sha3kmac.kmac_new(Sha3Shake128, bytes.zeros(32), bytes.from_str(""))
 //     println("${sha3kmac.kmac_rate_bytes(m)}")   // 168
 // ```
-pub fn kmac_new(k: Sha3XofKind, key: Bytes, customization: Bytes) -> Sha3Kmac []
-    todo("sha3-nv.sha3kmac.kmac_new")
+pub @tier(app)
+fn kmac_new(k: Sha3XofKind, key: Bytes, customization: Bytes) -> Sha3Kmac []
+    let base = cshake_new(k, bytes.from_str(KMAC_FUNCTION_NAME), customization)
+    let block = bytepad(encode_string(key), sha3xof.xof_rate_bytes(k))
+    var s = base.sponge
+    for i in 0..bytes.len(block)
+        s = sha3sponge.absorb_byte(s, bytes.byte_at(block, i) ?? 0)
+    Sha3Kmac { xof: Sha3Xof { sponge: s, squeezed: base.squeezed } }
 
 // Absorb a chunk of the message.  Any length.
 //
@@ -229,8 +328,9 @@ pub fn kmac_new(k: Sha3XofKind, key: Bytes, customization: Bytes) -> Sha3Kmac []
 //     m = sha3kmac.kmac_update(m, bytes.from_str("abc"))
 //     println("${sha3kmac.kmac_rate_bytes(m)}")   // 168
 // ```
-pub fn kmac_update(m: Sha3Kmac, data: Bytes) -> Sha3Kmac []
-    todo("sha3-nv.sha3kmac.kmac_update")
+pub @tier(app)
+fn kmac_update(m: Sha3Kmac, data: Bytes) -> Sha3Kmac []
+    Sha3Kmac { xof: sha3xof.xof_update(m.xof, data) }
 
 // Finish a KMAC into a buffer the caller owns, and hand it back.
 //
@@ -251,8 +351,12 @@ pub fn kmac_update(m: Sha3Kmac, data: Bytes) -> Sha3Kmac []
 //         Ok(tag) => println("${bytes.len(tag)}")   // 32
 //         Err(e)  => println(e.message())
 // ```
-pub fn kmac_finish(m: Sha3Kmac, out: Bytes) -> Result<Bytes, Sha3Error> []
-    todo("sha3-nv.sha3kmac.kmac_finish")
+pub @tier(app)
+fn kmac_finish(m: Sha3Kmac, var out: Bytes) -> Result<Bytes, Sha3Error> []
+    if bytes.len(out) == 0
+        return Err(Sha3EmptyOutput)
+    sha3xof.xof_squeeze(sha3xof.xof_update(m.xof, right_encode(8 * bytes.len(out))), out)
+    Ok(out)
 
 // Finish a KMAC in its extendable-output form, into a buffer the
 // caller owns.
@@ -274,16 +378,19 @@ pub fn kmac_finish(m: Sha3Kmac, out: Bytes) -> Result<Bytes, Sha3Error> []
 //     let out = sha3kmac.kmac_finish_xof(m, bytes.zeros(64))
 //     println("${bytes.len(out)}")   // 64
 // ```
-pub fn kmac_finish_xof(m: Sha3Kmac, out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3kmac.kmac_finish_xof")
+pub @tier(app)
+fn kmac_finish_xof(m: Sha3Kmac, var out: Bytes) -> Bytes []
+    sha3xof.xof_squeeze(sha3xof.xof_update(m.xof, right_encode(0)), out)
+    out
 
 // The rate of the sponge underneath a KMAC: 168 for KMAC128, 136 for
 // KMAC256.
 //
 // The number `bytepad` padded the key to, which a test asserts and a
 // reader checks against SP 800-185 § 4.3.
-pub fn kmac_rate_bytes(m: Sha3Kmac) -> Int []
-    todo("sha3-nv.sha3kmac.kmac_rate_bytes")
+pub @tier(app)
+fn kmac_rate_bytes(m: Sha3Kmac) -> Int []
+    sha3sponge.rate_of(m.xof.sponge)
 
 // KMAC128 in one call, into a buffer the caller owns.
 //
@@ -300,9 +407,10 @@ pub fn kmac_rate_bytes(m: Sha3Kmac) -> Int []
 //         Err(e)  => println(e.message())
 //     // e5780b0d3ea6f7d3a429c5706aa43a00fadbd7d49628839e3187243f456ee14e
 // ```
-pub fn kmac128(key: Bytes, data: Bytes, customization: Bytes,
-               out: Bytes) -> Result<Bytes, Sha3Error> []
-    todo("sha3-nv.sha3kmac.kmac128")
+pub @tier(app)
+fn kmac128(key: Bytes, data: Bytes, customization: Bytes,
+           var out: Bytes) -> Result<Bytes, Sha3Error> []
+    kmac_finish(kmac_update(kmac_new(Sha3Shake128, key, customization), data), out)
 
 // KMAC256 in one call, into a buffer the caller owns.
 //
@@ -317,9 +425,10 @@ pub fn kmac128(key: Bytes, data: Bytes, customization: Bytes,
 //         Ok(tag) => println("${bytes.len(tag)}")   // 64
 //         Err(e)  => println(e.message())
 // ```
-pub fn kmac256(key: Bytes, data: Bytes, customization: Bytes,
-               out: Bytes) -> Result<Bytes, Sha3Error> []
-    todo("sha3-nv.sha3kmac.kmac256")
+pub @tier(app)
+fn kmac256(key: Bytes, data: Bytes, customization: Bytes,
+           var out: Bytes) -> Result<Bytes, Sha3Error> []
+    kmac_finish(kmac_update(kmac_new(Sha3Shake256, key, customization), data), out)
 
 // KMAC128 in its extendable-output form, in one call.
 //
@@ -332,8 +441,9 @@ pub fn kmac256(key: Bytes, data: Bytes, customization: Bytes,
 //                                    bytes.from_str(""), bytes.zeros(32))
 //     println("${bytes.len(out)}")   // 32
 // ```
-pub fn kmac128_xof(key: Bytes, data: Bytes, customization: Bytes, out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3kmac.kmac128_xof")
+pub @tier(app)
+fn kmac128_xof(key: Bytes, data: Bytes, customization: Bytes, var out: Bytes) -> Bytes []
+    kmac_finish_xof(kmac_update(kmac_new(Sha3Shake128, key, customization), data), out)
 
 // KMAC256 in its extendable-output form, in one call.
 //
@@ -346,5 +456,6 @@ pub fn kmac128_xof(key: Bytes, data: Bytes, customization: Bytes, out: Bytes) ->
 //                                    bytes.from_str(""), bytes.zeros(64))
 //     println("${bytes.len(out)}")   // 64
 // ```
-pub fn kmac256_xof(key: Bytes, data: Bytes, customization: Bytes, out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3kmac.kmac256_xof")
+pub @tier(app)
+fn kmac256_xof(key: Bytes, data: Bytes, customization: Bytes, var out: Bytes) -> Bytes []
+    kmac_finish_xof(kmac_update(kmac_new(Sha3Shake256, key, customization), data), out)

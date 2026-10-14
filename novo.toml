@@ -1,15 +1,10 @@
 [package]
 name        = "sha3-nv"
-version     = "0.0.1"
-description = "FIPS 202's SHA-3: Keccak-p[1600, 24] as a @value state a device holds in its own frame, the sponge as a rate and one domain-separation byte, SHA3-224/256/384/512 as one state parameterised by a width, SHAKE128 and SHAKE256 with resumable squeezing, and cSHAKE and KMAC from SP 800-185 over the same sponge.  Interface only — every body is a todo()."
+version     = "0.1.0"
+description = "FIPS 202's SHA-3: Keccak-p[1600, 24] as a @value state a device holds in its own frame, the sponge as a rate and one domain-separation byte, SHA3-224/256/384/512 as one state parameterised by a width, SHAKE128 and SHAKE256 with resumable squeezing, and cSHAKE and KMAC from SP 800-185 over the same sponge."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+stability   = "experimental"
 
 # `core`.  A hash reads no clock, no file and no randomness: a message
 # arrives as bytes the host already holds and a digest is written into
@@ -28,7 +23,7 @@ category    = "crypto"
 tags = ["sha3", "keccak", "shake", "cshake", "kmac", "fips-202", "sp-800-185", "hash", "xof", "mac", "embedded"]
 repository  = "https://github.com/novolang/sha3-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.9.0"
+novo        = ">= 0.20.2"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.

@@ -1,9 +1,6 @@
 // tests/sha3_cover_tests.nv — the rest of the public surface, one case
 // each.
 //
-// RED ON PURPOSE, like every suite here: each assertion reaches
-// `not implemented: sha3-nv.<module>.<fn>`.
-//
 // The three suites beside this one assert the DESIGN — the known
 // answers, the sponge's two numbers, and the SP 800-185 encodings.
 // This one exists so that no public function ships without a written
@@ -81,8 +78,8 @@ fn test_the_xof_kinds_name_themselves() [io]
 fn test_sealing_an_xof_by_hand_gives_the_same_bytes_as_squeezing_straight_away() [io]
     // `xof_squeeze` seals for a caller who did not, so the two routes
     // are the same value and a caller never has to remember.
-    let a = bytes.zeros(32)
-    let b = bytes.zeros(32)
+    var a = bytes.zeros(32)
+    var b = bytes.zeros(32)
 
     var sealed = sha3xof.xof_seal(sha3xof.xof_new(Sha3Shake256))
     test.case("xof_seal marks the state as squeezing")
@@ -99,7 +96,7 @@ fn test_sealing_an_xof_by_hand_gives_the_same_bytes_as_squeezing_straight_away()
 fn test_the_streaming_kmac_xof_form_matches_its_one_shot() [io]
     let key = bytes.zeros(32)
     let empty = bytes.from_str("")
-    let out = bytes.zeros(32)
+    var out = bytes.zeros(32)
 
     var m = sha3kmac.kmac_new(Sha3Shake128, key, empty)
     m = sha3kmac.kmac_update(m, bytes.from_str("abc"))

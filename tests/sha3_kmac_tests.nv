@@ -1,9 +1,6 @@
 // tests/sha3_kmac_tests.nv — the SP 800-185 encodings, cSHAKE and
 // KMAC, against NIST's own example values.
 //
-// RED ON PURPOSE, like every suite here: each assertion reaches
-// `not implemented: sha3-nv.<module>.<fn>`.
-//
 // WHERE THE VECTORS COME FROM.  NIST publishes example values for
 // cSHAKE128, cSHAKE256, KMAC128 and KMAC256 beside SP 800-185.  Sample
 // 1 of cSHAKE128 hashes the four bytes 00 01 02 03 with an empty
@@ -246,7 +243,7 @@ fn test_a_cshake_state_can_be_driven_by_hand() [io]
     // `cshake_new` answers the same `Sha3Xof` the plain SHAKEs use, so
     // a caller that has to absorb a message in pieces under a
     // customization string has the ordinary streaming calls.
-    let out = bytes.zeros(32)
+    var out = bytes.zeros(32)
     var c = sha3kmac.cshake_new(Sha3Shake128, bytes.from_str(""),
                                 bytes.from_str("Email Signature"))
 

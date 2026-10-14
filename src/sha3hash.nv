@@ -25,6 +25,8 @@
 // program hashing one thing should not have to think about it.
 
 use std.bytes
+use sha3err
+use sha3sponge
 
 // Bytes SHA3-224 writes.
 pub const SHA3_224_DIGEST_BYTES = 28
@@ -91,6 +93,32 @@ struct Sha3State
     // How many bytes `finish` will write.
     digest_len: Int
 
+// Private: the sponge with every byte of `data` absorbed.
+//
+// A byte at a time, which is what makes any chunk length admissible:
+// the sponge keeps its own position in the rate, so a caller never
+// buffers and no call can be misaligned.
+@tier(app)
+fn absorb_all(sponge: Sha3Sponge, data: Bytes) -> Sha3Sponge
+    var s = sponge
+    for i in 0..bytes.len(data)
+        s = sha3sponge.absorb_byte(s, bytes.byte_at(data, i) ?? 0)
+    s
+
+// Private: seal the sponge and write exactly `n` output bytes into
+// `out`.
+//
+// The callers are `finish`, which has refused a buffer of any other
+// length first, and the four one-shots, which size the buffer from
+// this module's own constants.  So `n` equals `bytes.len(out)` at
+// every call site, and the loop is the whole of squeezing.
+@tier(app)
+fn squeeze_into(sponge: Sha3Sponge, var out: Bytes, n: Int)
+    var s = sha3sponge.seal(sponge)
+    for i in 0..n
+        bytes.set_u8(out, i, sha3sponge.squeeze_byte(s))
+        s = sha3sponge.squeeze_next(s)
+
 // Bytes the width's digest occupies.
 //
 // ```novo
@@ -99,8 +127,13 @@ struct Sha3State
 // fn main() [io]
 //     println("${sha3hash.digest_bytes(Sha3Width512)}")   // 64
 // ```
-pub fn digest_bytes(w: Sha3Width) -> Int []
-    todo("sha3-nv.sha3hash.digest_bytes")
+pub @tier(app)
+fn digest_bytes(w: Sha3Width) -> Int []
+    match w
+        Sha3Width224 => SHA3_224_DIGEST_BYTES
+        Sha3Width256 => SHA3_256_DIGEST_BYTES
+        Sha3Width384 => SHA3_384_DIGEST_BYTES
+        Sha3Width512 => SHA3_512_DIGEST_BYTES
 
 // Message bytes the width absorbs per permutation.
 //
@@ -113,8 +146,13 @@ pub fn digest_bytes(w: Sha3Width) -> Int []
 // fn main() [io]
 //     println("${sha3hash.rate_bytes(Sha3Width256)}")   // 136
 // ```
-pub fn rate_bytes(w: Sha3Width) -> Int []
-    todo("sha3-nv.sha3hash.rate_bytes")
+pub @tier(app)
+fn rate_bytes(w: Sha3Width) -> Int []
+    match w
+        Sha3Width224 => SHA3_224_RATE_BYTES
+        Sha3Width256 => SHA3_256_RATE_BYTES
+        Sha3Width384 => SHA3_384_RATE_BYTES
+        Sha3Width512 => SHA3_512_RATE_BYTES
 
 // The width's capacity in bits: twice the digest length in bits.
 //
@@ -124,8 +162,9 @@ pub fn rate_bytes(w: Sha3Width) -> Int []
 // fn main() [io]
 //     println("${sha3hash.capacity_bits(Sha3Width256)}")   // 512
 // ```
-pub fn capacity_bits(w: Sha3Width) -> Int []
-    todo("sha3-nv.sha3hash.capacity_bits")
+pub @tier(app)
+fn capacity_bits(w: Sha3Width) -> Int []
+    2 * 8 * digest_bytes(w)
 
 // The width's name as FIPS 202 writes it: `"SHA3-224"`, `"SHA3-256"`,
 // `"SHA3-384"`, `"SHA3-512"`.
@@ -136,8 +175,13 @@ pub fn capacity_bits(w: Sha3Width) -> Int []
 // fn main() [io]
 //     println(sha3hash.width_name(Sha3Width384))   // SHA3-384
 // ```
-pub fn width_name(w: Sha3Width) -> Str []
-    todo("sha3-nv.sha3hash.width_name")
+pub @tier(app)
+fn width_name(w: Sha3Width) -> Str []
+    match w
+        Sha3Width224 => "SHA3-224"
+        Sha3Width256 => "SHA3-256"
+        Sha3Width384 => "SHA3-384"
+        Sha3Width512 => "SHA3-512"
 
 // The width a name denotes, or `None`.
 //
@@ -153,8 +197,14 @@ pub fn width_name(w: Sha3Width) -> Str []
 //         Some(_) => println("yes")
 //         None    => println("no")
 // ```
-pub fn width_named(name: Str) -> ?Sha3Width []
-    todo("sha3-nv.sha3hash.width_named")
+pub @tier(app)
+fn width_named(name: Str) -> ?Sha3Width []
+    match name
+        "SHA3-224" => Some(Sha3Width224)
+        "SHA3-256" => Some(Sha3Width256)
+        "SHA3-384" => Some(Sha3Width384)
+        "SHA3-512" => Some(Sha3Width512)
+        _          => None
 
 // A fresh hash state for a width.
 //
@@ -165,8 +215,10 @@ pub fn width_named(name: Str) -> ?Sha3Width []
 //     let st = sha3hash.new(Sha3Width256)
 //     println("${sha3hash.digest_len_of(st)}")   // 32
 // ```
-pub fn new(w: Sha3Width) -> Sha3State []
-    todo("sha3-nv.sha3hash.new")
+pub @tier(app)
+fn new(w: Sha3Width) -> Sha3State []
+    Sha3State { sponge: sha3sponge.sponge(rate_bytes(w), sha3sponge.SHA3_PAD_HASH),
+                digest_len: digest_bytes(w) }
 
 // Absorb a chunk of the message.
 //
@@ -185,8 +237,9 @@ pub fn new(w: Sha3Width) -> Sha3State []
 //     st = sha3hash.update(st, bytes.from_str("bc"))
 //     println("${sha3hash.digest_len_of(st)}")   // 32
 // ```
-pub fn update(st: Sha3State, data: Bytes) -> Sha3State []
-    todo("sha3-nv.sha3hash.update")
+pub @tier(app)
+fn update(st: Sha3State, data: Bytes) -> Sha3State []
+    Sha3State { sponge: absorb_all(st.sponge, data), digest_len: st.digest_len }
 
 // Finish into a buffer the caller owns, and hand that buffer back.
 //
@@ -206,19 +259,27 @@ pub fn update(st: Sha3State, data: Bytes) -> Sha3State []
 //         Err(e) => println(e.message())
 //     // 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
 // ```
-pub fn finish(st: Sha3State, out: Bytes) -> Result<Bytes, Sha3Error> []
-    todo("sha3-nv.sha3hash.finish")
+pub @tier(app)
+fn finish(st: Sha3State, var out: Bytes) -> Result<Bytes, Sha3Error> []
+    if bytes.len(out) != st.digest_len
+        return Err(Sha3OutputBufferWrong(want: st.digest_len, got: bytes.len(out)))
+    squeeze_into(st.sponge, out, st.digest_len)
+    Ok(out)
 
 // How many bytes this state's `finish` will write.
-pub fn digest_len_of(st: Sha3State) -> Int []
-    todo("sha3-nv.sha3hash.digest_len_of")
+pub @tier(app)
+fn digest_len_of(st: Sha3State) -> Int []
+    st.digest_len
 
 // Whether this state has been finished and will absorb nothing more.
 //
-// `update` on such a state answers `Sha3AbsorbAfterSqueeze` rather
-// than a digest nothing else computes.
-pub fn is_finished(st: Sha3State) -> Bool []
-    todo("sha3-nv.sha3hash.is_finished")
+// `finish` seals a copy, so the state a caller holds is never sealed
+// and this answers `false` for every one of them; it asks the sponge
+// the question `sha3sponge.is_sealed` asks, for a caller holding a
+// `Sha3State` rather than its inside.
+pub @tier(app)
+fn is_finished(st: Sha3State) -> Bool []
+    sha3sponge.is_sealed(st.sponge)
 
 // One call: hash `data` at width `w` into a buffer the caller owns.
 //
@@ -234,8 +295,9 @@ pub fn is_finished(st: Sha3State) -> Bool []
 //         Ok(d)  => println(bytes.to_hex(d))
 //         Err(e) => println(e.message())
 // ```
-pub fn digest_into(w: Sha3Width, data: Bytes, out: Bytes) -> Result<Bytes, Sha3Error> []
-    todo("sha3-nv.sha3hash.digest_into")
+pub @tier(app)
+fn digest_into(w: Sha3Width, data: Bytes, var out: Bytes) -> Result<Bytes, Sha3Error> []
+    finish(update(new(w), data), out)
 
 // SHA3-224 of a message, into a buffer this call allocates.
 //
@@ -247,8 +309,12 @@ pub fn digest_into(w: Sha3Width, data: Bytes, out: Bytes) -> Result<Bytes, Sha3E
 //     println(bytes.to_hex(sha3hash.sha3_224(bytes.from_str("abc"))))
 //     // e642824c3f8cf24ad09234ee7d3c766fc9a3a5168d0c94ad73b46fdf
 // ```
-pub fn sha3_224(data: Bytes) -> Bytes []
-    todo("sha3-nv.sha3hash.sha3_224")
+pub @tier(app)
+fn sha3_224(data: Bytes) -> Bytes []
+    let st = update(new(Sha3Width224), data)
+    var out = bytes.zeros(SHA3_224_DIGEST_BYTES)
+    squeeze_into(st.sponge, out, SHA3_224_DIGEST_BYTES)
+    out
 
 // SHA3-256 of a message, into a buffer this call allocates.
 //
@@ -260,8 +326,12 @@ pub fn sha3_224(data: Bytes) -> Bytes []
 //     println(bytes.to_hex(sha3hash.sha3_256(bytes.from_str("abc"))))
 //     // 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
 // ```
-pub fn sha3_256(data: Bytes) -> Bytes []
-    todo("sha3-nv.sha3hash.sha3_256")
+pub @tier(app)
+fn sha3_256(data: Bytes) -> Bytes []
+    let st = update(new(Sha3Width256), data)
+    var out = bytes.zeros(SHA3_256_DIGEST_BYTES)
+    squeeze_into(st.sponge, out, SHA3_256_DIGEST_BYTES)
+    out
 
 // SHA3-384 of a message, into a buffer this call allocates.
 //
@@ -273,8 +343,12 @@ pub fn sha3_256(data: Bytes) -> Bytes []
 //     let d = sha3hash.sha3_384(bytes.from_str("abc"))
 //     println("${bytes.len(d)}")   // 48
 // ```
-pub fn sha3_384(data: Bytes) -> Bytes []
-    todo("sha3-nv.sha3hash.sha3_384")
+pub @tier(app)
+fn sha3_384(data: Bytes) -> Bytes []
+    let st = update(new(Sha3Width384), data)
+    var out = bytes.zeros(SHA3_384_DIGEST_BYTES)
+    squeeze_into(st.sponge, out, SHA3_384_DIGEST_BYTES)
+    out
 
 // SHA3-512 of a message, into a buffer this call allocates.
 //
@@ -286,5 +360,9 @@ pub fn sha3_384(data: Bytes) -> Bytes []
 //     let d = sha3hash.sha3_512(bytes.from_str("abc"))
 //     println("${bytes.len(d)}")   // 64
 // ```
-pub fn sha3_512(data: Bytes) -> Bytes []
-    todo("sha3-nv.sha3hash.sha3_512")
+pub @tier(app)
+fn sha3_512(data: Bytes) -> Bytes []
+    let st = update(new(Sha3Width512), data)
+    var out = bytes.zeros(SHA3_512_DIGEST_BYTES)
+    squeeze_into(st.sponge, out, SHA3_512_DIGEST_BYTES)
+    out

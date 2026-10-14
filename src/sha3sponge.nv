@@ -41,6 +41,8 @@
 // answers integers and a `@value` struct, so it compiles for a
 // microcontroller with no heap allocator.
 
+use sha3keccak
+
 // The domain-separation byte of the four fixed-width SHA-3 hashes.
 pub const SHA3_PAD_HASH = 0x06
 
@@ -84,12 +86,32 @@ struct Sha3Sponge
     // nothing more.
     sealed: Bool
 
+// Private: the same sponge after one permutation, with its position
+// back at the start of the rate.
+//
+// A `@value` struct's fields are immutable, so every step of the
+// sponge builds the next sponge as a literal rather than assigning
+// into one.  The `rate`, `pad` and `sealed` fields are carried over
+// unchanged by both of the helpers here.
+fn permuted(s: Sha3Sponge, lanes: Sha3Lanes) -> Sha3Sponge
+    Sha3Sponge { lanes: sha3keccak.permute(lanes), rate: s.rate,
+                 pos: 0, pad: s.pad, sealed: s.sealed }
+
+// Private: the same sponge with a new state and a new position.
+//
+// The position is always `0 ..= rate - 1` and the state is always one
+// this module built, so neither helper needs to validate its input.
+fn stepped(s: Sha3Sponge, lanes: Sha3Lanes, pos: Int) -> Sha3Sponge
+    Sha3Sponge { lanes: lanes, rate: s.rate, pos: pos,
+                 pad: s.pad, sealed: s.sealed }
+
 // A fresh sponge with the given rate and domain-separation byte.
 //
 // The state is all zeros, the position is 0 and the sponge is
 // absorbing.  A rate of zero or less is not refused here — a `@value`
-// function has nowhere to put a refusal — and the `Bytes` layer above
-// answers `Sha3RateNotPositive` before it ever reaches this call.
+// function has nowhere to put a refusal — and no published call can
+// pass one: every rate this package uses is a named constant.  A
+// caller that computes a rate itself reports `Sha3RateNotPositive`.
 //
 // ```novo
 // use sha3sponge
@@ -99,15 +121,17 @@ struct Sha3Sponge
 //     println("${sha3sponge.pad_of(s)}")       // 31
 // ```
 pub fn sponge(rate_bytes: Int, pad: Int) -> Sha3Sponge []
-    todo("sha3-nv.sha3sponge.sponge")
+    Sha3Sponge { lanes: sha3keccak.zero_lanes(), rate: rate_bytes,
+                 pos: 0, pad: pad, sealed: false }
 
 // Absorb one message byte.
 //
 // XORs the byte into the state at the current position, steps the
 // position, and permutes when the position reaches the rate.  A byte
 // fed to a sealed sponge is IGNORED, because a `@value` function has
-// nowhere to put a refusal; `sha3hash.update` is where that ordering
-// mistake becomes `Sha3AbsorbAfterSqueeze`.
+// nowhere to put a refusal; `is_sealed` is the question to ask first,
+// and `sha3err.Sha3AbsorbAfterSqueeze` names the ordering mistake for
+// a caller that reports one.
 //
 // ```novo
 // use sha3sponge
@@ -117,7 +141,14 @@ pub fn sponge(rate_bytes: Int, pad: Int) -> Sha3Sponge []
 //     println("${sha3sponge.position(s)}")   // 1
 // ```
 pub fn absorb_byte(s: Sha3Sponge, b: u8) -> Sha3Sponge []
-    todo("sha3-nv.sha3sponge.absorb_byte")
+    if s.sealed
+        return s
+    let lanes = sha3keccak.xor_byte(s.lanes, s.pos, b)
+    let next = s.pos + 1
+    if next >= s.rate
+        permuted(s, lanes)
+    else
+        stepped(s, lanes, next)
 
 // Finish absorbing: apply the padding and permute once.
 //
@@ -141,7 +172,12 @@ pub fn absorb_byte(s: Sha3Sponge, b: u8) -> Sha3Sponge []
 //     println("${sha3sponge.is_sealed(s)}")   // true
 // ```
 pub fn seal(s: Sha3Sponge) -> Sha3Sponge []
-    todo("sha3-nv.sha3sponge.seal")
+    if s.sealed
+        return s
+    let with_pad = sha3keccak.xor_byte(s.lanes, s.pos, (s.pad & 0xFF) as u8)
+    let with_last = sha3keccak.xor_byte(with_pad, s.rate - 1, 0x80 as u8)
+    Sha3Sponge { lanes: sha3keccak.permute(with_last), rate: s.rate,
+                 pos: 0, pad: s.pad, sealed: true }
 
 // The output byte at the sponge's current position.
 //
@@ -158,7 +194,9 @@ pub fn seal(s: Sha3Sponge) -> Sha3Sponge []
 //     println("${sha3sponge.squeeze_byte(s)}")
 // ```
 pub fn squeeze_byte(s: Sha3Sponge) -> Int []
-    todo("sha3-nv.sha3sponge.squeeze_byte")
+    if not s.sealed
+        return 0
+    sha3keccak.state_byte(s.lanes, s.pos)
 
 // Step one byte along the output, permuting when the rate runs out.
 //
@@ -174,11 +212,17 @@ pub fn squeeze_byte(s: Sha3Sponge) -> Int []
 //     println("${sha3sponge.position(s)}")   // 1
 // ```
 pub fn squeeze_next(s: Sha3Sponge) -> Sha3Sponge []
-    todo("sha3-nv.sha3sponge.squeeze_next")
+    if not s.sealed
+        return s
+    let next = s.pos + 1
+    if next >= s.rate
+        permuted(s, s.lanes)
+    else
+        stepped(s, s.lanes, next)
 
 // The sponge's rate in bytes.
 pub fn rate_of(s: Sha3Sponge) -> Int []
-    todo("sha3-nv.sha3sponge.rate_of")
+    s.rate
 
 // The sponge's capacity in BITS: 1600 minus eight times the rate.
 //
@@ -193,23 +237,23 @@ pub fn rate_of(s: Sha3Sponge) -> Int []
 //     println("${sha3sponge.capacity_of(sha3sponge.sponge(136, 0x06))}")   // 512
 // ```
 pub fn capacity_of(s: Sha3Sponge) -> Int []
-    todo("sha3-nv.sha3sponge.capacity_of")
+    8 * (sha3keccak.SHA3_STATE_BYTES - s.rate)
 
 // Where in the rate the next absorb or squeeze will happen.
 pub fn position(s: Sha3Sponge) -> Int []
-    todo("sha3-nv.sha3sponge.position")
+    s.pos
 
 // The domain-separation byte this sponge will finish with.
 pub fn pad_of(s: Sha3Sponge) -> Int []
-    todo("sha3-nv.sha3sponge.pad_of")
+    s.pad
 
 // Whether the sponge has been sealed and is squeezing.
 pub fn is_sealed(s: Sha3Sponge) -> Bool []
-    todo("sha3-nv.sha3sponge.is_sealed")
+    s.sealed
 
 // The Keccak state inside the sponge.
 //
 // For a test that compares against the intermediate states the Keccak
 // team publish, and for a caller that drives the permutation itself.
 pub fn lanes_of(s: Sha3Sponge) -> Sha3Lanes []
-    todo("sha3-nv.sha3sponge.lanes_of")
+    s.lanes

@@ -10,8 +10,10 @@
 //
 // The one refusal that is neither is `Sha3RateNotPositive`, and it
 // exists because `sha3sponge.sponge` takes a rate as a number: a rate
-// of zero would divide by zero in the implementation and answer
-// nothing here.
+// of zero is not a sponge, the function has nowhere to put a refusal,
+// and this is the code a caller checks a rate of its own with.
+
+use std.str
 
 // What a call in this package refuses with.
 //
@@ -39,6 +41,23 @@ pub enum Sha3Error
     // every rate FIPS 202 defines is between 72 and 168.
     Sha3RateNotPositive(rate: Int)
 
+// Private: the FIPS 202 name of the fixed-width digest whose output is
+// `want` bytes long.
+//
+// The four widths are the only `want` this package raises
+// `Sha3OutputBufferWrong` with, so the four arms are the whole of the
+// production cases.  A refusal a caller built itself may name any
+// length at all, and the wildcard answers a phrase rather than
+// inventing a width FIPS 202 does not define.
+@tier(app)
+fn digest_name(want: Int) -> Str
+    match want
+        28 => "SHA3-224"
+        32 => "SHA3-256"
+        48 => "SHA3-384"
+        64 => "SHA3-512"
+        _  => "the digest"
+
 // message renders the refusal as one line of prose, with the numbers
 // in it.
 //
@@ -56,8 +75,19 @@ impl Error for Sha3Error
     //     println(e.message())
     //     // sha3: the output buffer is 16 bytes and SHA3-256 writes 32
     // ```
+    @tier(app)
     fn message(self) -> Str
-        todo("sha3-nv.sha3err.Sha3Error.message")
+        match self
+            Sha3OutputBufferWrong(want, got) =>
+                "sha3: the output buffer is " + str.from_int(got) + " bytes and "
+                    + digest_name(want) + " writes " + str.from_int(want)
+            Sha3EmptyOutput                  =>
+                "sha3: an output of zero bytes was asked for where the construction forbids it"
+            Sha3AbsorbAfterSqueeze           =>
+                "sha3: more input was fed to a state that has already produced output"
+            Sha3RateNotPositive(rate)        =>
+                "sha3: a sponge was asked for with a rate of " + str.from_int(rate)
+                    + " bytes, and a rate must be positive"
 
 // Whether the refusal is about a length the caller chose.
 //
@@ -71,8 +101,13 @@ impl Error for Sha3Error
 // fn main() [io]
 //     println("${sha3err.is_length_fault(Sha3EmptyOutput)}")   // true
 // ```
-pub fn is_length_fault(e: Sha3Error) -> Bool []
-    todo("sha3-nv.sha3err.is_length_fault")
+pub @tier(app)
+fn is_length_fault(e: Sha3Error) -> Bool []
+    match e
+        Sha3OutputBufferWrong(_, _) => true
+        Sha3EmptyOutput             => true
+        Sha3AbsorbAfterSqueeze      => false
+        Sha3RateNotPositive(_)      => true
 
 // Whether the refusal is about the order two calls were made in.
 //
@@ -86,8 +121,13 @@ pub fn is_length_fault(e: Sha3Error) -> Bool []
 // fn main() [io]
 //     println("${sha3err.is_order_fault(Sha3AbsorbAfterSqueeze)}")   // true
 // ```
-pub fn is_order_fault(e: Sha3Error) -> Bool []
-    todo("sha3-nv.sha3err.is_order_fault")
+pub @tier(app)
+fn is_order_fault(e: Sha3Error) -> Bool []
+    match e
+        Sha3AbsorbAfterSqueeze      => true
+        Sha3OutputBufferWrong(_, _) => false
+        Sha3EmptyOutput             => false
+        Sha3RateNotPositive(_)      => false
 
 // The refusal as a short stable token, for a log that is grepped
 // rather than read: `"output-buffer-wrong"`, `"empty-output"`,
@@ -99,5 +139,10 @@ pub fn is_order_fault(e: Sha3Error) -> Bool []
 // fn main() [io]
 //     println(sha3err.code(Sha3EmptyOutput))   // empty-output
 // ```
-pub fn code(e: Sha3Error) -> Str []
-    todo("sha3-nv.sha3err.code")
+pub @tier(app)
+fn code(e: Sha3Error) -> Str []
+    match e
+        Sha3OutputBufferWrong(_, _) => "output-buffer-wrong"
+        Sha3EmptyOutput             => "empty-output"
+        Sha3AbsorbAfterSqueeze      => "absorb-after-squeeze"
+        Sha3RateNotPositive(_)      => "rate-not-positive"

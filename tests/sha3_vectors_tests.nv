@@ -1,12 +1,6 @@
 // tests/sha3_vectors_tests.nv — the known answers FIPS 202 and the
 // NIST example files print, for the four hashes and the two XOFs.
 //
-// They COMPILE today and they FAIL at run, with `not implemented:
-// sha3-nv.<module>.<fn>` from the `todo()` that is each body.  That is
-// the expected state of an interface release: the compiler has checked
-// every signature, every type and every effect row, and nothing else
-// has been checked because there is nothing else yet.
-//
 // WHERE THE VECTORS COME FROM.  FIPS 202 defines the functions, and
 // NIST publishes the byte-oriented known answers as
 // `SHA3_256ShortMsg.rsp` and its siblings in the Cryptographic
@@ -149,8 +143,8 @@ fn test_squeezing_is_resumable_and_the_pieces_concatenate() [io]
     // Two squeezes of 16 bytes give the same 32 bytes as one squeeze
     // of 32.  That is what makes `xof_squeeze` a streaming form rather
     // than a repeated one-shot.
-    let first = bytes.zeros(16)
-    let second = bytes.zeros(16)
+    var first = bytes.zeros(16)
+    var second = bytes.zeros(16)
     var x = sha3xof.xof_new(Sha3Shake128)
     x = sha3xof.xof_squeeze(x, first)
     x = sha3xof.xof_squeeze(x, second)

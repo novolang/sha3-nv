@@ -66,6 +66,101 @@ struct Sha3Lanes
     // The lanes, indexed `x + 5 * y`.
     a: [Int; 25]
 
+// Private: write one lane of a state the caller owns.
+//
+// Every step mapping builds its answer by starting from a copy of the
+// old state and overwriting the lanes it touches, so this is where the
+// whole permutation's writes go.  The index is never out of range: the
+// five callers all write `x + 5 * y` for x and y in `0 ..= 4`.
+fn set_lane(var s: Sha3Lanes, i: Int, v: Int)
+    s.a[i] = v
+
+// Private: the parity of column `x`, which FIPS 202 § 3.2.1 calls
+// C[x] and writes as the XOR of the five lanes A[x, 0 ..= 4].
+fn column_parity(s: Sha3Lanes, x: Int) -> Int
+    lane(s, x) ^ lane(s, x + 5) ^ lane(s, x + 10) ^ lane(s, x + 15) ^ lane(s, x + 20)
+
+// Private: the rho rotation offsets of FIPS 202 § 3.2.2, in the same
+// `x + 5 * y` index order.  Table 2 of that section prints them as a
+// grid whose columns are x = 3, 4, 0, 1, 2; transposed into this
+// package's order the five rows are as the arms below.
+fn rho_of(i: Int) -> Int
+    match i
+        0  => 0
+        1  => 1
+        2  => 62
+        3  => 28
+        4  => 27
+        5  => 36
+        6  => 44
+        7  => 6
+        8  => 55
+        9  => 20
+        10 => 3
+        11 => 10
+        12 => 43
+        13 => 25
+        14 => 39
+        15 => 41
+        16 => 45
+        17 => 15
+        18 => 21
+        19 => 8
+        20 => 18
+        21 => 2
+        22 => 61
+        23 => 56
+        24 => 14
+        _  => 0
+
+// Private: where lane i moves to under pi.
+//
+// FIPS 202 § 3.2.3 defines pi by A'[x, y] = A[(x + 3y) mod 5, x], so
+// lane (x, y) lands at ((x + 3y) mod 5, x).  Solving that for the
+// source of a given destination: the destination's y is the source's x,
+// and 3 times the source's y is the destination's x minus its y, mod 5
+// — and 3's inverse mod 5 is 2.  So the destination of (x, y) is
+// `y + 5 * ((2 * (x - y)) mod 5)`, written below with 5 added so the
+// operand of `%` is never negative.
+fn pi_of(i: Int) -> Int
+    let x = i % 5
+    let y = i / 5
+    y + 5 * (2 * (x + 5 - y) % 5)
+
+// Private: the 24 round constants of FIPS 202 § 3.2.5.
+//
+// Algorithm 6 of the standard derives each one from Algorithm 5's
+// linear feedback shift register.  They are written here as the
+// decimals that carry the same 64-bit pattern, which is why thirteen
+// of them are negative.
+fn rc_of(i: Int) -> Int
+    match i
+        0  => 1
+        1  => 32898
+        2  => -9223372036854742902
+        3  => -9223372034707259392
+        4  => 32907
+        5  => 2147483649
+        6  => -9223372034707259263
+        7  => -9223372036854743031
+        8  => 138
+        9  => 136
+        10 => 2147516425
+        11 => 2147483658
+        12 => 2147516555
+        13 => -9223372036854775669
+        14 => -9223372036854742903
+        15 => -9223372036854743037
+        16 => -9223372036854743038
+        17 => -9223372036854775680
+        18 => 32778
+        19 => -9223372034707292150
+        20 => -9223372034707259263
+        21 => -9223372036854742912
+        22 => 2147483649
+        23 => -9223372034707259384
+        _  => 0
+
 // The all-zero state, which is where every sponge starts.
 //
 // FIPS 202 § 4 begins absorbing from a state of 1600 zero bits.  There
@@ -80,7 +175,8 @@ struct Sha3Lanes
 //     println("${sha3keccak.lane(sha3keccak.zero_lanes(), 24)}")   // 0
 // ```
 pub fn zero_lanes() -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.zero_lanes")
+    Sha3Lanes { a: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
 
 // The lane at index `i`, counted `x + 5 * y`.
 //
@@ -95,7 +191,9 @@ pub fn zero_lanes() -> Sha3Lanes []
 //     println("${sha3keccak.lane(sha3keccak.zero_lanes(), 3)}")   // 0
 // ```
 pub fn lane(s: Sha3Lanes, i: Int) -> Int []
-    todo("sha3-nv.sha3keccak.lane")
+    if i < 0 or i >= SHA3_LANE_COUNT
+        return 0
+    s.a[i]
 
 // The state with lane `i` replaced by `v`.
 //
@@ -109,7 +207,11 @@ pub fn lane(s: Sha3Lanes, i: Int) -> Int []
 //     println("${sha3keccak.lane(s, 0)}")   // 1
 // ```
 pub fn with_lane(s: Sha3Lanes, i: Int, v: Int) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.with_lane")
+    if i < 0 or i >= SHA3_LANE_COUNT
+        return s
+    var out = s
+    set_lane(out, i, v)
+    out
 
 // Rotate a 64-bit lane left by `n` bits, for `n` in `0 ..= 63`.
 //
@@ -125,12 +227,13 @@ pub fn with_lane(s: Sha3Lanes, i: Int, v: Int) -> Sha3Lanes []
 //     println("${sha3keccak.rotl64(1, 1)}")   // 2
 // ```
 pub fn rotl64(x: Int, n: Int) -> Int []
-    todo("sha3-nv.sha3keccak.rotl64")
+    let m = n & 63
+    (x << m) | (x >>> ((64 - m) & 63))
 
 // The round constant for round `i`, for `i` in `0 ..= 23`.
 //
 // FIPS 202 § 3.2.5 derives the 24 constants from a linear feedback
-// shift register and Appendix B prints them.  The first is 1 and the
+// shift register, in Algorithms 5 and 6.  The first is 1 and the
 // last is `0x8000000080008008`, which as a signed `Int` is
 // -9223372034707259384.  A round outside the range answers 0.
 //
@@ -141,7 +244,7 @@ pub fn rotl64(x: Int, n: Int) -> Int []
 //     println("${sha3keccak.round_constant(0)}")   // 1
 // ```
 pub fn round_constant(i: Int) -> Int []
-    todo("sha3-nv.sha3keccak.round_constant")
+    rc_of(i)
 
 // The rho rotation offset for lane `i`, counted `x + 5 * y`.
 //
@@ -156,7 +259,7 @@ pub fn round_constant(i: Int) -> Int []
 //     println("${sha3keccak.rho_offset(0)}")   // 0
 // ```
 pub fn rho_offset(i: Int) -> Int []
-    todo("sha3-nv.sha3keccak.rho_offset")
+    rho_of(i)
 
 // Where lane `i` moves to under pi, counted `x + 5 * y` at both ends.
 //
@@ -171,7 +274,7 @@ pub fn rho_offset(i: Int) -> Int []
 //     println("${sha3keccak.pi_index(0)}")   // 0
 // ```
 pub fn pi_index(i: Int) -> Int []
-    todo("sha3-nv.sha3keccak.pi_index")
+    pi_of(i)
 
 // The theta step: mix every lane with the parity of two neighbouring
 // columns.
@@ -179,7 +282,12 @@ pub fn pi_index(i: Int) -> Int []
 // FIPS 202 § 3.2.1.  This is the step that gives Keccak its diffusion:
 // one flipped input bit reaches eleven lanes after theta alone.
 pub fn theta(s: Sha3Lanes) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.theta")
+    var out = s
+    for x in 0..5
+        let d = column_parity(s, (x + 4) % 5) ^ rotl64(column_parity(s, (x + 1) % 5), 1)
+        for y in 0..5
+            set_lane(out, x + 5 * y, lane(s, x + 5 * y) ^ d)
+    out
 
 // The rho and pi steps together: rotate each lane by its offset and
 // move it to its new position.
@@ -189,7 +297,10 @@ pub fn theta(s: Sha3Lanes) -> Sha3Lanes []
 // writes each lane once.  They are fused here too, and the two
 // accessors above are what a reader checks the fusion against.
 pub fn rho_pi(s: Sha3Lanes) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.rho_pi")
+    var out = s
+    for i in 0..SHA3_LANE_COUNT
+        set_lane(out, pi_of(i), rotl64(lane(s, i), rho_of(i)))
+    out
 
 // The chi step: the only non-linear step, one row at a time.
 //
@@ -198,7 +309,14 @@ pub fn rho_pi(s: Sha3Lanes) -> Sha3Lanes []
 // permutation is linear over GF(2); this is the step the security
 // argument rests on.
 pub fn chi(s: Sha3Lanes) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.chi")
+    var out = s
+    for y in 0..5
+        for x in 0..5
+            let at = x + 5 * y
+            let next = lane(s, (x + 1) % 5 + 5 * y)
+            let after = lane(s, (x + 2) % 5 + 5 * y)
+            set_lane(out, at, lane(s, at) ^ (~next & after))
+    out
 
 // The iota step: XOR the round constant into lane 0.
 //
@@ -207,7 +325,9 @@ pub fn chi(s: Sha3Lanes) -> Sha3Lanes []
 // round would be identical and a state of all-equal lanes would stay
 // that way.
 pub fn iota(s: Sha3Lanes, round: Int) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.iota")
+    var out = s
+    set_lane(out, 0, lane(s, 0) ^ rc_of(round))
+    out
 
 // One round: theta, then rho and pi, then chi, then iota.
 //
@@ -223,7 +343,7 @@ pub fn iota(s: Sha3Lanes, round: Int) -> Sha3Lanes []
 //     println("${sha3keccak.lane(s, 0)}")   // 1 — iota alone, on a zero state
 // ```
 pub fn keccak_round(s: Sha3Lanes, round: Int) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.keccak_round")
+    iota(chi(rho_pi(theta(s))), round)
 
 // Keccak-p[1600, 24]: all twenty-four rounds, in order.
 //
@@ -239,7 +359,10 @@ pub fn keccak_round(s: Sha3Lanes, round: Int) -> Sha3Lanes []
 //     println("${sha3keccak.lane(s, 0) != 0}")   // true
 // ```
 pub fn permute(s: Sha3Lanes) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.permute")
+    var a = s
+    for r in 0..SHA3_ROUNDS
+        a = keccak_round(a, r)
+    a
 
 // The byte at `offset` in the state's little-endian byte string, for
 // `offset` in `0 ..= 199`.
@@ -257,7 +380,9 @@ pub fn permute(s: Sha3Lanes) -> Sha3Lanes []
 //     println("${sha3keccak.state_byte(sha3keccak.zero_lanes(), 0)}")   // 0
 // ```
 pub fn state_byte(s: Sha3Lanes, offset: Int) -> Int []
-    todo("sha3-nv.sha3keccak.state_byte")
+    if offset < 0 or offset >= SHA3_STATE_BYTES
+        return 0
+    (lane(s, offset / 8) >>> (8 * (offset % 8))) & 0xFF
 
 // The state with byte `offset` XORed by `b`, in the same little-endian
 // byte order.
@@ -275,4 +400,10 @@ pub fn state_byte(s: Sha3Lanes, offset: Int) -> Int []
 //     println("${sha3keccak.state_byte(s, 0)}")   // 6
 // ```
 pub fn xor_byte(s: Sha3Lanes, offset: Int, b: u8) -> Sha3Lanes []
-    todo("sha3-nv.sha3keccak.xor_byte")
+    if offset < 0 or offset >= SHA3_STATE_BYTES
+        return s
+    let at = offset / 8
+    let mask = (b as Int & 0xFF) << (8 * (offset % 8))
+    var out = s
+    set_lane(out, at, lane(s, at) ^ mask)
+    out

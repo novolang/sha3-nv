@@ -25,6 +25,7 @@
 // running the other way.
 
 use std.bytes
+use sha3sponge
 
 // Message bytes SHAKE128 absorbs per permutation, and output bytes it
 // produces per permutation.
@@ -76,6 +77,24 @@ struct Sha3Xof
     // The sponge, started with the kind's rate and `0x1f` — or with
     // `0x04` when `sha3kmac` built it as a cSHAKE.
     sponge: Sha3Sponge
+    // Output bytes given out so far, which `xof_squeezed` reports.
+    //
+    // The sponge's own position is the offset within one rate block
+    // and returns to 0 at every permutation, so the running total has
+    // to be counted here rather than read back out of the state.
+    squeezed: Int
+
+// Private: the same XOF with every byte of `data` absorbed.
+//
+// A byte at a time, so any chunk length is admissible and no call can
+// be misaligned with the rate.  A byte fed to an already-sealed XOF is
+// ignored by the sponge underneath, which is the documented rule.
+@tier(app)
+fn absorb_all(x: Sha3Xof, data: Bytes) -> Sha3Xof
+    var s = x.sponge
+    for i in 0..bytes.len(data)
+        s = sha3sponge.absorb_byte(s, bytes.byte_at(data, i) ?? 0)
+    Sha3Xof { sponge: s, squeezed: x.squeezed }
 
 // Message bytes the kind absorbs per permutation: 168 or 136.
 //
@@ -85,8 +104,11 @@ struct Sha3Xof
 // fn main() [io]
 //     println("${sha3xof.xof_rate_bytes(Sha3Shake128)}")   // 168
 // ```
-pub fn xof_rate_bytes(k: Sha3XofKind) -> Int []
-    todo("sha3-nv.sha3xof.xof_rate_bytes")
+pub @tier(app)
+fn xof_rate_bytes(k: Sha3XofKind) -> Int []
+    match k
+        Sha3Shake128 => SHAKE128_RATE_BYTES
+        Sha3Shake256 => SHAKE256_RATE_BYTES
 
 // The security strength the kind claims, in bits: 128 or 256.
 //
@@ -96,13 +118,19 @@ pub fn xof_rate_bytes(k: Sha3XofKind) -> Int []
 // fn main() [io]
 //     println("${sha3xof.xof_security_bits(Sha3Shake256)}")   // 256
 // ```
-pub fn xof_security_bits(k: Sha3XofKind) -> Int []
-    todo("sha3-nv.sha3xof.xof_security_bits")
+pub @tier(app)
+fn xof_security_bits(k: Sha3XofKind) -> Int []
+    match k
+        Sha3Shake128 => SHAKE128_SECURITY_BITS
+        Sha3Shake256 => SHAKE256_SECURITY_BITS
 
 // The kind's name as FIPS 202 writes it: `"SHAKE128"` or
 // `"SHAKE256"`.
-pub fn xof_name(k: Sha3XofKind) -> Str []
-    todo("sha3-nv.sha3xof.xof_name")
+pub @tier(app)
+fn xof_name(k: Sha3XofKind) -> Str []
+    match k
+        Sha3Shake128 => "SHAKE128"
+        Sha3Shake256 => "SHAKE256"
 
 // A fresh SHAKE, ready to absorb.
 //
@@ -113,8 +141,10 @@ pub fn xof_name(k: Sha3XofKind) -> Str []
 //     let x = sha3xof.xof_new(Sha3Shake256)
 //     println("${sha3xof.xof_is_sealed(x)}")   // false
 // ```
-pub fn xof_new(k: Sha3XofKind) -> Sha3Xof []
-    todo("sha3-nv.sha3xof.xof_new")
+pub @tier(app)
+fn xof_new(k: Sha3XofKind) -> Sha3Xof []
+    Sha3Xof { sponge: sha3sponge.sponge(xof_rate_bytes(k), sha3sponge.SHA3_PAD_XOF),
+              squeezed: 0 }
 
 // Absorb a chunk of the message.  Any length.
 //
@@ -133,8 +163,9 @@ pub fn xof_new(k: Sha3XofKind) -> Sha3Xof []
 //     x = sha3xof.xof_update(x, bytes.from_str("abc"))
 //     println("${sha3xof.xof_is_sealed(x)}")   // false
 // ```
-pub fn xof_update(x: Sha3Xof, data: Bytes) -> Sha3Xof []
-    todo("sha3-nv.sha3xof.xof_update")
+pub @tier(app)
+fn xof_update(x: Sha3Xof, data: Bytes) -> Sha3Xof []
+    absorb_all(x, data)
 
 // Finish absorbing: pad, permute, and begin the output.
 //
@@ -148,8 +179,9 @@ pub fn xof_update(x: Sha3Xof, data: Bytes) -> Sha3Xof []
 //     let x = sha3xof.xof_seal(sha3xof.xof_new(Sha3Shake128))
 //     println("${sha3xof.xof_is_sealed(x)}")   // true
 // ```
-pub fn xof_seal(x: Sha3Xof) -> Sha3Xof []
-    todo("sha3-nv.sha3xof.xof_seal")
+pub @tier(app)
+fn xof_seal(x: Sha3Xof) -> Sha3Xof []
+    Sha3Xof { sponge: sha3sponge.seal(x.sponge), squeezed: x.squeezed }
 
 // Squeeze `out` full and answer the state positioned after it.
 //
@@ -168,8 +200,8 @@ pub fn xof_seal(x: Sha3Xof) -> Sha3Xof []
 // use sha3xof
 //
 // fn main() [io]
-//     let first = bytes.zeros(16)
-//     let second = bytes.zeros(16)
+//     var first = bytes.zeros(16)
+//     var second = bytes.zeros(16)
 //     var x = sha3xof.xof_new(Sha3Shake128)
 //     x = sha3xof.xof_squeeze(x, first)
 //     x = sha3xof.xof_squeeze(x, second)
@@ -177,19 +209,26 @@ pub fn xof_seal(x: Sha3Xof) -> Sha3Xof []
 //     // 7f9c2ba4e88f827d616045507605853e — the first half of
 //     // SHAKE128 of the empty message
 // ```
-pub fn xof_squeeze(x: Sha3Xof, out: Bytes) -> Sha3Xof []
-    todo("sha3-nv.sha3xof.xof_squeeze")
+pub @tier(app)
+fn xof_squeeze(x: Sha3Xof, var out: Bytes) -> Sha3Xof []
+    var s = sha3sponge.seal(x.sponge)
+    for i in 0..bytes.len(out)
+        bytes.set_u8(out, i, sha3sponge.squeeze_byte(s))
+        s = sha3sponge.squeeze_next(s)
+    Sha3Xof { sponge: s, squeezed: x.squeezed + bytes.len(out) }
 
 // Whether the XOF has been sealed and is producing output.
-pub fn xof_is_sealed(x: Sha3Xof) -> Bool []
-    todo("sha3-nv.sha3xof.xof_is_sealed")
+pub @tier(app)
+fn xof_is_sealed(x: Sha3Xof) -> Bool []
+    sha3sponge.is_sealed(x.sponge)
 
 // How many output bytes have been squeezed so far.
 //
 // What a caller generating a key stream reports, and what a test
 // asserts when it checks that two squeezes of 16 bytes are one of 32.
-pub fn xof_squeezed(x: Sha3Xof) -> Int []
-    todo("sha3-nv.sha3xof.xof_squeezed")
+pub @tier(app)
+fn xof_squeezed(x: Sha3Xof) -> Int []
+    x.squeezed
 
 // SHAKE128 of a message, into a buffer the caller owns, of whatever
 // length that buffer is.
@@ -203,8 +242,10 @@ pub fn xof_squeezed(x: Sha3Xof) -> Int []
 //     println(bytes.to_hex(out))
 //     // 7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26
 // ```
-pub fn shake128_into(data: Bytes, out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3xof.shake128_into")
+pub @tier(app)
+fn shake128_into(data: Bytes, var out: Bytes) -> Bytes []
+    xof_squeeze(absorb_all(xof_new(Sha3Shake128), data), out)
+    out
 
 // SHAKE256 of a message, into a buffer the caller owns.
 //
@@ -217,8 +258,10 @@ pub fn shake128_into(data: Bytes, out: Bytes) -> Bytes []
 //     println(bytes.to_hex(out))
 //     // 46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f
 // ```
-pub fn shake256_into(data: Bytes, out: Bytes) -> Bytes []
-    todo("sha3-nv.sha3xof.shake256_into")
+pub @tier(app)
+fn shake256_into(data: Bytes, var out: Bytes) -> Bytes []
+    xof_squeeze(absorb_all(xof_new(Sha3Shake256), data), out)
+    out
 
 // SHAKE128 of a message, `out_len` bytes, allocated by this call.
 //
@@ -234,8 +277,11 @@ pub fn shake256_into(data: Bytes, out: Bytes) -> Bytes []
 //     let out = sha3xof.shake128(bytes.from_str("abc"), 32)
 //     println("${bytes.len(out)}")   // 32
 // ```
-pub fn shake128(data: Bytes, out_len: Int) -> Bytes []
-    todo("sha3-nv.sha3xof.shake128")
+pub @tier(app)
+fn shake128(data: Bytes, out_len: Int) -> Bytes []
+    var out = bytes.zeros(out_len)
+    shake128_into(data, out)
+    out
 
 // SHAKE256 of a message, `out_len` bytes, allocated by this call.
 //
@@ -247,5 +293,8 @@ pub fn shake128(data: Bytes, out_len: Int) -> Bytes []
 //     let out = sha3xof.shake256(bytes.from_str("abc"), 64)
 //     println("${bytes.len(out)}")   // 64
 // ```
-pub fn shake256(data: Bytes, out_len: Int) -> Bytes []
-    todo("sha3-nv.sha3xof.shake256")
+pub @tier(app)
+fn shake256(data: Bytes, out_len: Int) -> Bytes []
+    var out = bytes.zeros(out_len)
+    shake256_into(data, out)
+    out
